@@ -81,9 +81,9 @@
 //! slider is the pointer's alone, like the switch of a row.
 //!
 //! The league is the current trade league of the site's list; the environment variable
-//! ZENITH_LEAGUE names another. The game data is kept in `%LOCALAPPDATA%\zenith\pack.json`; the
+//! ZENITH_LEAGUE names another. The game data is kept in `%APPDATA%\Zenith Trade\pack.json`; the
 //! environment variable ZENITH_PACK names another file. The pinned settings are kept in
-//! `%LOCALAPPDATA%\zenith\config.json`; the environment variable ZENITH_CONFIG names another
+//! `%APPDATA%\Zenith Trade\config.json`; the environment variable ZENITH_CONFIG names another
 //! file.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -254,13 +254,13 @@ macro_rules! log {
 
 static LOG_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
 
-/// Appends a line to %LOCALAPPDATA%\zenith\zenith.log (the previous run's file becomes
+/// Appends a line to %APPDATA%\Zenith Trade\zenith.log (the previous run's file becomes
 /// zenith.old.log). The release exe has no console, so this file is where its output goes.
 /// Any failure is ignored: logging must never stop the program.
 fn log_to_file(line: &str) {
     use std::io::Write;
     let file = LOG_FILE.get_or_init(|| {
-        let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("zenith");
+        let dir = config::data_dir();
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join("zenith.log");
         let _ = std::fs::rename(&path, dir.join("zenith.old.log"));
@@ -1969,11 +1969,15 @@ fn post(id: i32) {
 // ---- main ---------------------------------------------------------------------------------
 
 fn main() {
+    let copied = config::migrate_old_data();
     std::panic::set_hook(Box::new(|info| {
         let line = format!("panic: {info}");
         eprintln!("{line}");
         log_to_file(&line);
     }));
+    if copied > 0 {
+        log_to_file(&format!("copied {copied} data file(s) from the old folder %LOCALAPPDATA%\\zenith to {}", config::data_dir().display()));
+    }
     if let Err(error) = run() {
         let line = format!("zenith stopped: {error}");
         eprintln!("{line}");

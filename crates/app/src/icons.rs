@@ -1,5 +1,5 @@
 //! Currency icons, fetched at run time from the game's content network and kept in
-//! `%LOCALAPPDATA%\zenith\icons\<id>.png`. None is part of the repository. A key is an exchange
+//! `%APPDATA%\Zenith Trade\icons\<id>.png`. None is part of the repository. A key is an exchange
 //! id (`chaos`) or an item name (`Divine Orb`). The download goes on its own thread and the panel
 //! asks again every frame: until the picture is there, the text stands in its place.
 
@@ -32,8 +32,7 @@ pub fn id_of(unit: &str) -> &str {
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("zenith").join("icons"))
+    Some(crate::config::data_dir().join("icons"))
 }
 
 /// The file of a key's icon: its name lowercased, any character that is no letter, digit, `-` or

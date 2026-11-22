@@ -884,7 +884,7 @@ struct Mods {
 impl Mods {
     fn load(sample: bool) -> Self {
         // Where the store keeps its file (its own helper is private).
-        let path = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("zenith").join("map-mods.json");
+        let path = crate::config::data_dir().join("map-mods.json");
         let mut store = if sample { crate::maps::MapMods::default() } else { crate::maps::MapMods::load() };
         if sample {
             use crate::maps::Tag;

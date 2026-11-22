@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "zenith-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "httpmock",
@@ -3745,11 +3745,11 @@ dependencies = [
 
 [[package]]
 name = "zenith-core"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "zenith-data"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "httpmock",
  "serde",
@@ -3759,7 +3759,7 @@ dependencies = [
 
 [[package]]
 name = "zenith-prices"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "httpmock",
  "serde",
@@ -3769,7 +3769,7 @@ dependencies = [
 
 [[package]]
 name = "zenith-trade"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "httpmock",
  "serde",

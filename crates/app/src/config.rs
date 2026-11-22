@@ -4,7 +4,7 @@
 //! is not in the file, and a new check takes the built-in value for it. The file also says
 //! whether Ctrl and the wheel change stash tab, `"stash_scroll": false` for no: it is yes when
 //! the file says nothing of it, and the panel has no switch for it. The file is
-//! `%LOCALAPPDATA%\zenith\config.json`, or the one the environment variable `ZENITH_CONFIG`
+//! `%APPDATA%\Zenith Trade\config.json`, or the one the environment variable `ZENITH_CONFIG`
 //! names. It is read once, at start, and written by one thread only, the `Saver`'s, so that a
 //! frame never waits for the disk and no two writers ever meet. What else the file holds, the
 //! `hotkeys` object for one (see `hotkeys`), is the player's own writing: saving a pin leaves it
@@ -22,7 +22,7 @@ use crate::check::{Options, STATUSES, Setting};
 use crate::look::{Marker, Theme};
 use zenith_core::matching::Slack;
 
-/// Names the file of the settings, in place of the one under `%LOCALAPPDATA%`.
+/// Names the file of the settings, in place of the one in the data folder.
 pub const VARIABLE: &str = "ZENITH_CONFIG";
 
 /// The keys of the file that are written from here. Every other key is left as it is.
@@ -314,13 +314,47 @@ impl Config {
     }
 }
 
-/// Where the settings are kept, given what `ZENITH_CONFIG` and `LOCALAPPDATA` hold: the file the
-/// first names, or `zenith\config.json` under the second, or under the temporary folder.
-fn path_from(named: Option<OsString>, local: Option<OsString>) -> PathBuf {
+/// The folder of the app's data: `%APPDATA%\Zenith Trade`.
+pub fn data_dir() -> PathBuf {
+    zenith_data::pack::data_dir()
+}
+
+/// Copies the files of an older install (`%LOCALAPPDATA%\zenith`, which the installer's own
+/// folder shared) to the data folder, once: only when the new folder has no `config.json` and the
+/// old one has a `config.json` or `map-mods.json`. Nothing is moved or deleted; icons are left to
+/// download again. Returns the number of files copied; failures are ignored.
+pub fn migrate_old_data() -> usize {
+    let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|root| !root.is_empty()) else { return 0 };
+    migrate_from(&PathBuf::from(local).join("zenith"), &data_dir())
+}
+
+fn migrate_from(old: &std::path::Path, new: &std::path::Path) -> usize {
+    if new.join("config.json").exists() || !(old.join("config.json").is_file() || old.join("map-mods.json").is_file()) {
+        return 0;
+    }
+    if std::fs::create_dir_all(new).is_err() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(old) else { return 0 };
+    let mut copied = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let text = name.to_string_lossy();
+        let wanted = matches!(text.as_ref(), "config.json" | "map-mods.json" | "pack.json") || (text.starts_with("prices-") && text.ends_with(".json"));
+        if wanted && entry.path().is_file() && std::fs::copy(entry.path(), new.join(&name)).is_ok() {
+            copied += 1;
+        }
+    }
+    copied
+}
+
+/// Where the settings are kept, given what `ZENITH_CONFIG` names: that file, or
+/// `config.json` in the data folder.
+fn path_from(named: Option<OsString>) -> PathBuf {
     if let Some(named) = named.filter(|path| !path.is_empty()) {
         return PathBuf::from(named);
     }
-    local.filter(|root| !root.is_empty()).map_or_else(std::env::temp_dir, PathBuf::from).join("zenith").join("config.json")
+    data_dir().join("config.json")
 }
 
 /// The file `ZENITH_CONFIG` names, when it names one.
@@ -328,9 +362,9 @@ pub fn named_path() -> Option<PathBuf> {
     std::env::var_os(VARIABLE).filter(|path| !path.is_empty()).map(PathBuf::from)
 }
 
-/// Where the settings are kept: the file `ZENITH_CONFIG` names, or the one under `%LOCALAPPDATA%`.
+/// Where the settings are kept: the file `ZENITH_CONFIG` names, or the one in the data folder.
 pub fn path() -> PathBuf {
-    path_from(std::env::var_os(VARIABLE), std::env::var_os("LOCALAPPDATA"))
+    path_from(std::env::var_os(VARIABLE))
 }
 
 /// The file's text with its `hotkeys` object replaced, every other key as it was. A text that is

@@ -426,7 +426,7 @@ impl PriceList {
             })
     }
 
-    /// `%LOCALAPPDATA%\zenith\prices-<league>.json`. Without that variable,
+    /// `%APPDATA%\Zenith Trade\prices-<league>.json`. Without that variable,
     /// the same under the temporary folder. Letters, digits, spaces, `-`
     /// and `_` of the league name are kept; anything else is written as `%`
     /// and its bytes in hexadecimal, so that two leagues never share a file
@@ -444,10 +444,10 @@ impl PriceList {
             }
         }
         name.push_str(".json");
-        std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("APPDATA")
             .filter(|root| !root.is_empty())
             .map_or_else(std::env::temp_dir, PathBuf::from)
-            .join("zenith")
+            .join("Zenith Trade")
             .join(name)
     }
 }

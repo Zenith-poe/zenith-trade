@@ -4,7 +4,7 @@
 //! A mod is tagged `Danger` or `Good` by the player, with a right click in the panel. The tag
 //! belongs to the mod's wording with its numbers taken out (`Monsters reflect #% of Physical
 //! Damage`), so it holds for every map that has the mod, whatever it rolled. The tags live in
-//! `%LOCALAPPDATA%\zenith\map-mods.json`; a file that cannot be read is ignored and said in the
+//! `%APPDATA%\Zenith Trade\map-mods.json`; a file that cannot be read is ignored and said in the
 //! log.
 
 use std::collections::BTreeMap;
@@ -161,9 +161,9 @@ impl MapMods {
 
 }
 
-/// `%LOCALAPPDATA%\zenith\map-mods.json`.
+/// `%APPDATA%\Zenith Trade\map-mods.json`.
 fn file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("zenith").join("map-mods.json"))
+    Some(crate::config::data_dir().join("map-mods.json"))
 }
 
 static STORE: Mutex<Option<MapMods>> = Mutex::new(None);

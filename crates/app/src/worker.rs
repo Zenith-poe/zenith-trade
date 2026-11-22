@@ -139,7 +139,7 @@ pub fn league_override() -> Option<String> {
         .or_else(|| crate::CONFIG.lock().ok().and_then(|config| config.league).map(|league| league.as_str().to_owned()))
 }
 
-/// Where the data pack is kept: the file `ZENITH_PACK` names, or the one under `%LOCALAPPDATA%`.
+/// Where the data pack is kept: the file `ZENITH_PACK` names, or the one in the data folder.
 pub fn pack_path() -> PathBuf {
     std::env::var_os(PACK_VARIABLE).filter(|path| !path.is_empty()).map_or_else(Pack::default_path, PathBuf::from)
 }

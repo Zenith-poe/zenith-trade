@@ -90,15 +90,20 @@ impl Pack {
             })
     }
 
-    /// `%LOCALAPPDATA%\zenith\pack.json`. Without that variable, the same
+    /// `%APPDATA%\Zenith Trade\pack.json`. Without that variable, the same
     /// under the temporary folder.
     pub fn default_path() -> PathBuf {
-        std::env::var_os("LOCALAPPDATA")
-            .filter(|root| !root.is_empty())
-            .map_or_else(std::env::temp_dir, PathBuf::from)
-            .join("zenith")
-            .join("pack.json")
+        data_dir().join("pack.json")
     }
+}
+
+/// The folder where the app keeps its data: `%APPDATA%\Zenith Trade` (roaming, so that
+/// uninstalling the app never removes it), or the same under the temporary folder.
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .filter(|root| !root.is_empty())
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("Zenith Trade")
 }
 
 fn io(error: std::io::Error) -> PackError {
