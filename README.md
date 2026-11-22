@@ -4,6 +4,8 @@ A price-check overlay for Path of Exile 1, on Windows.
 
 Hover an item, press a key, and a small panel next to the item tells you what it is worth and who is selling the same thing.
 
+<p align="center"><img src=".github/screenshot.png" alt="Zenith Trade pricing a rare body armour" width="420"></p>
+
 ## What it does
 
 - **Price check** (`Ctrl+D`) for gear, jewels, gems, maps, uniques, flasks and stackables. The panel opens with the item read and an estimate, then the listings arrive.
@@ -48,5 +50,6 @@ Path of Exile, its name, item names and images belong to Grinding Gear Games. Al
 - The application icon and the installer image (`crates/app/assets/divine-source.png`, `crates/app/assets/zenith.ico`, `installer/splash.png`) are the Divine Orb image from Path of Exile, © Grinding Gear Games. They are not covered by the MIT licence.
 - Currency, item and influence icons are not shipped: Zenith Trade downloads them while it runs from the game's content network and from the community wiki, and keeps them in a local cache.
 - Prices come from the official trade site and from poe.ninja.
+- The screenshot shows Divine Orb and Chaos Orb icons, © Grinding Gear Games.
 
 Fan-made. This product isn't affiliated with or endorsed by Grinding Gear Games in any way.

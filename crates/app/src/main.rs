@@ -314,6 +314,9 @@ mod dev {
     pub fn demo() -> bool {
         false
     }
+    pub fn zoom() -> Option<f32> {
+        None
+    }
     pub fn scripted() -> bool {
         false
     }
@@ -2073,7 +2076,7 @@ fn run() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Zenith Trade")
             // The height is set for each view once the fonts can measure it.
-            .with_inner_size([panel::WIDTH, 400.0 + panel::SHADOW])
+            .with_inner_size([panel::WIDTH * dev::zoom().unwrap_or(1.0), 400.0 + panel::SHADOW])
             .with_decorations(false)
             .with_transparent(true)
             .with_resizable(false)
@@ -2131,6 +2134,9 @@ fn run() -> eframe::Result {
             // While a number field has the caret the panel has the keyboard: Ctrl with + or - must
             // not change the scale the whole panel is laid out at.
             cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
+            if let Some(zoom) = dev::zoom() {
+                cc.egui_ctx.set_zoom_factor(zoom);
+            }
 
             // The thread that will own the mouse hook while the panel is visible. It hooks nothing
             // until the first show.
