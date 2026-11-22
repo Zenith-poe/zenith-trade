@@ -1,0 +1,5 @@
+Zenith is a fan-made tool. It isn't affiliated with or endorsed by Grinding Gear Games in any way.
+
+It never reads the game's memory or files, and does at most one action in the game per key press.
+
+Uninstalling keeps your settings and prices in %LOCALAPPDATA%\zenith unless you choose to remove them.

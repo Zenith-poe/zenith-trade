@@ -1,0 +1,45 @@
+# Builds the installer and publishes it as a GitHub release when a version tag is pushed.
+# The version in Cargo.toml must match the tag (v0.1.0 for version 0.1.0).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} does not match version $version" }
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install the Velopack packer
+        run: dotnet tool install -g vpk --version 1.2.161
+
+      - name: Build and pack
+        shell: pwsh
+        run: ./installer/pack.ps1
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = Get-ChildItem target/releases -File | ForEach-Object { $_.FullName }
+          gh release create "${{ github.ref_name }}" --title "Zenith Trade $("${{ github.ref_name }}".TrimStart('v'))" --notes-file .github/release-notes.md @files
