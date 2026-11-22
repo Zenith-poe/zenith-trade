@@ -96,6 +96,8 @@ pub struct Options {
     /// Gear with a free prefix, or a free suffix, only.
     pub open_prefix: bool,
     pub open_suffix: bool,
+    /// Magic listings only (a magic item starts with it); off, any rarity but unique.
+    pub magic: bool,
     pub status: Status,
     /// `None`: any currency.
     pub currency: Option<Currency>,
@@ -123,6 +125,7 @@ impl Options {
             foulborn: is_foulborn(item).then_some(true),
             open_prefix: false,
             open_suffix: false,
+            magic: item.rarity == Rarity::Magic,
             status: Status::Securable,
             currency: Some(Currency::ChaosDivine),
             listed: Some(Listed::Days3),
@@ -528,6 +531,9 @@ impl Check {
                 click: Action::CycleCorrupted,
             });
         }
+        if self.item.rarity == Rarity::Magic && matches!(self.plan, Plan::Gear { .. }) {
+            chips.push(OptionChip { option: ItemOption::Magic, label: "Magic only".into(), number: None, on: chosen.magic, click: Action::ToggleMagic });
+        }
         if is_foulborn(&self.item) && self.plan == Plan::Unique {
             chips.push(OptionChip { option: ItemOption::Foulborn, label: "Foulborn".into(), number: None, on: chosen.foulborn.is_some(), click: Action::ToggleFoulborn });
         }
@@ -627,6 +633,8 @@ pub fn way_set(check: &Check, way: Way) -> (Vec<Filter>, Options) {
         base: matches!(&check.plan, Plan::Gear { base: Some(_), .. }),
         item_level: check.item.item_level.map(|level| level.min(BASE_LEVEL)),
         fractured: check.item.fractured.then_some(true),
+        // A base is a base whatever its rarity.
+        magic: false,
         ..options
     };
     (filters, options)
@@ -649,6 +657,8 @@ pub enum ItemOption {
     Unique,
     /// A Foulborn unique asks for Foulborn copies only.
     Foulborn,
+    /// A magic item asks for magic listings only.
+    Magic,
     /// A free prefix, a free suffix.
     OpenPrefix,
     OpenSuffix,
@@ -865,6 +875,7 @@ pub enum Action {
     /// only opens its menu.
     PickUnique(Option<usize>),
     ToggleFoulborn,
+    ToggleMagic,
     ToggleOpenPrefix,
     ToggleOpenSuffix,
     CycleCorrupted,
@@ -995,6 +1006,7 @@ pub fn apply(check: &mut Check, action: &Action) -> Effect {
         Action::SetQuality(quality) => check.options.quality = quality,
         Action::SetLinks(links) => check.options.links = links,
         Action::ToggleFoulborn => check.options.foulborn = if check.options.foulborn.is_some() { None } else { Some(true) },
+        Action::ToggleMagic => check.options.magic = !check.options.magic,
         Action::ToggleOpenPrefix => check.options.open_prefix = !check.options.open_prefix,
         Action::ToggleOpenSuffix => check.options.open_suffix = !check.options.open_suffix,
         Action::ToggleInfluence(influence) => check.options.influences ^= influence.bit(),
@@ -1211,6 +1223,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
             let mut search = GearSearch {
                 category: Some(category),
                 base: base.as_deref().filter(|_| chosen.base),
+                rarity_magic: matches!(check.plan, Plan::Gear { .. }) && chosen.magic,
                 rarity_nonunique: matches!(check.plan, Plan::Gear { .. }) && check.item.rarity != Rarity::Unique,
                 rarity_unique: matches!(check.plan, Plan::Gear { .. }) && check.item.rarity == Rarity::Unique,
                 item_level_min: chosen.item_level,

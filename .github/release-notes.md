@@ -1,12 +1,11 @@
 ## What's new
 
-- Settings, map tags and caches now live in `%APPDATA%\Zenith Trade`, apart from the program, so uninstalling or reinstalling no longer deletes them. Settings from 0.1.0 are copied over at the first start.
-- No console window: Zenith Trade runs as a normal Windows app and writes its log to `zenith.log` in that folder.
-- The installer shows a splash image while it installs.
+- "+# total to all Attributes" now matches the trade site: it is what the item gives to every attribute (the smallest of the Strength, Dexterity and Intelligence totals), not their sum. It only shows when the item has all three, and starts off.
+- A magic item gets a "Magic only" chip, on by default: the search asks for magic listings. Turn it off to compare with rares too.
 
 ## Install
 
-Download `Zenith-win-Setup.exe` below and run it. It installs for your user only (no admin rights), adds a Start menu entry and starts Zenith Trade in the system tray. If 0.1.0 is installed, it updates itself on its next restart.
+Download `Zenith-win-Setup.exe` below and run it. It installs for your user only (no admin rights), adds a Start menu entry and starts Zenith Trade in the system tray. An installed copy updates itself on its next restart.
 
 Windows SmartScreen may warn that the publisher is unknown, because the installer is not signed: click "More info", then "Run anyway".
 

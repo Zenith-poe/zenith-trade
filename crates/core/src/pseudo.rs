@@ -93,8 +93,9 @@ pub struct Pseudo {
 /// totals:
 /// - total resistance with chaos (when a chaos line exists, on), and total elemental
 ///   resistance (on, unless the total with chaos is);
-/// - total of all attributes, and the total of each one fed by several lines (the latter on
-///   only when no total of all attributes exists);
+/// - total of all attributes: what the item gives to every attribute, the smallest of the
+///   three totals, only when each is fed (off: `+30 to Dexterity` and `+23 to Intelligence`
+///   give none); and the total of each attribute fed by several lines (on);
 /// - total maximum Life: only the `+# to maximum Life` lines, nothing from Strength;
 /// - total maximum Energy Shield: only the flat lines, and not on a piece of armour, where
 ///   they are local to it.
@@ -128,7 +129,9 @@ pub fn pseudo_totals(mods: &[Mod], local: Local, stats: &Stats) -> Vec<Pseudo> {
             .collect()
     };
     let mut out: Vec<Pseudo> = Vec::new();
-    let mut add = |text: &str, of: &[Part], need_parts: usize, need_chaos: bool, on: bool| -> bool {
+    // `least`: the total is the smallest of the totals of each part (the site's total of all
+    // attributes is what the item gives to every attribute), and needs every part fed.
+    let mut add = |text: &str, of: &[Part], need_parts: usize, need_chaos: bool, on: bool, least: bool| -> bool {
         let fed = feeding(of);
         let count: usize = fed.iter().map(|(_, n)| n).sum();
         let chaos = fed.iter().any(|(s, _)| s.parts.contains(&Chaos));
@@ -136,13 +139,22 @@ pub fn pseudo_totals(mods: &[Mod], local: Local, stats: &Stats) -> Vec<Pseudo> {
         if count < need_parts || (need_chaos && !chaos) {
             return false;
         }
-        let value: f64 = fed.iter().map(|(s, n)| s.value * *n as f64).sum();
-        let range = fed.iter().any(|(s, _)| s.range.is_some()).then(|| {
-            fed.iter().fold((0.0, 0.0), |sum, (s, n)| {
-                let (low, high) = s.range.unwrap_or((s.value, s.value));
-                (sum.0 + low * *n as f64, sum.1 + high * *n as f64)
-            })
-        });
+        let (value, range) = if least {
+            let each: Vec<_> = of.iter().map(|part| sum(&feeding(&[*part]))).collect();
+            if each.iter().any(|(value, _)| *value <= 0.0) {
+                return false;
+            }
+            let value = each.iter().map(|(value, _)| *value).fold(f64::INFINITY, f64::min);
+            let range = each.iter().any(|(_, range)| range.is_some()).then(|| {
+                each.iter().fold((f64::INFINITY, f64::INFINITY), |least, (value, range)| {
+                    let (low, high) = range.unwrap_or((*value, *value));
+                    (least.0.min(low), least.1.min(high))
+                })
+            });
+            (value, range)
+        } else {
+            sum(&fed)
+        };
         out.push(Pseudo {
             id: id.clone(),
             label: text.replacen('#', &format!("{value}"), 1),
@@ -154,9 +166,9 @@ pub fn pseudo_totals(mods: &[Mod], local: Local, stats: &Stats) -> Vec<Pseudo> {
         true
     };
 
-    let with_chaos = add("+#% total Resistance", &ALL_RESISTANCES, 2, true, true);
-    add("+#% total Elemental Resistance", &ELEMENTAL, 2, false, !with_chaos);
-    let attributes = add("+# total to all Attributes", &ATTRIBUTES, 2, false, true);
+    let with_chaos = add("+#% total Resistance", &ALL_RESISTANCES, 2, true, true, false);
+    add("+#% total Elemental Resistance", &ELEMENTAL, 2, false, !with_chaos, false);
+    add("+# total to all Attributes", &ATTRIBUTES, 2, false, false, true);
     for (text, part) in [
         ("+# total to Strength", Strength),
         ("+# total to Dexterity", Dexterity),
@@ -164,10 +176,23 @@ pub fn pseudo_totals(mods: &[Mod], local: Local, stats: &Stats) -> Vec<Pseudo> {
     ] {
         // Several lines, not one that feeds several parts.
         if feeding(&[part]).len() >= 2 {
-            add(text, &[part], 2, false, !attributes);
+            add(text, &[part], 2, false, true, false);
         }
     }
-    add("+# total maximum Life", &[Life], 2, false, true);
-    add("+# total maximum Energy Shield", &[EnergyShield], 2, false, true);
+    add("+# total maximum Life", &[Life], 2, false, true, false);
+    add("+# total maximum Energy Shield", &[EnergyShield], 2, false, true, false);
     out
+}
+
+/// The sum of what `fed` gives, each source counted once per part it feeds, with the range
+/// when one source gives one.
+fn sum(fed: &[(&Source, usize)]) -> (f64, Option<(f64, f64)>) {
+    let value = fed.iter().map(|(s, n)| s.value * *n as f64).sum();
+    let range = fed.iter().any(|(s, _)| s.range.is_some()).then(|| {
+        fed.iter().fold((0.0, 0.0), |sum, (s, n)| {
+            let (low, high) = s.range.unwrap_or((s.value, s.value));
+            (sum.0 + low * *n as f64, sum.1 + high * *n as f64)
+        })
+    });
+    (value, range)
 }

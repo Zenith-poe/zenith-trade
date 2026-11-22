@@ -188,6 +188,8 @@ pub struct GearSearch<'a> {
     pub category: Option<&'a str>,
     /// The base type, such as `Vaal Regalia`.
     pub base: Option<&'a str>,
+    /// Magic items only; it wins over `rarity_nonunique`.
+    pub rarity_magic: bool,
     /// Leave unique items out.
     pub rarity_nonunique: bool,
     /// Unique items only: an unidentified unique is searched by its base.
@@ -243,7 +245,9 @@ pub fn gear_request(search: &GearSearch<'_>, opts: &SearchOptions) -> Value {
     if let Some(category) = search.category {
         kind.insert("category".into(), json!({ "option": category }));
     }
-    if search.rarity_nonunique {
+    if search.rarity_magic {
+        kind.insert("rarity".into(), json!({ "option": "magic" }));
+    } else if search.rarity_nonunique {
         kind.insert("rarity".into(), json!({ "option": "nonunique" }));
     } else if search.rarity_unique {
         kind.insert("rarity".into(), json!({ "option": "unique" }));
