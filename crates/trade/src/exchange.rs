@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 /// Offers kept and shown.
-pub const SHOWN: usize = 5;
+pub const SHOWN: usize = 20;
 
 /// One seller's offer: `give` of the currency we pay for `get` of the item.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +33,27 @@ pub struct Bulk {
     pub median: Option<f64>,
 }
 
+/// One row of the list shown: a seller's offer, or the price list's own quote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Row<'a> {
+    Offer(&'a Offer),
+    /// The market price of one item in the paying currency, from the price list.
+    Market(f64),
+}
+
+impl Bulk {
+    /// The offers in price order with the market price (when known) merged in at its place; it
+    /// goes before the offers that ask the same.
+    pub fn rows(&self, market: Option<f64>) -> Vec<Row<'_>> {
+        let mut rows: Vec<Row<'_>> = self.offers.iter().map(Row::Offer).collect();
+        if let Some(price) = market.filter(|price| price.is_finite() && *price > 0.0) {
+            let at = self.offers.iter().position(|offer| offer.each() >= price).unwrap_or(rows.len());
+            rows.insert(at, Row::Market(price));
+        }
+        rows
+    }
+}
+
 /// The body of a bulk exchange request for online sellers of `want` against `have`.
 pub fn request(have: &str, want: &str) -> Value {
     json!({
@@ -42,7 +63,7 @@ pub fn request(have: &str, want: &str) -> Value {
     })
 }
 
-/// The first offer of every listing of an answer that sells `want` for `have`, cheapest first,
+/// The offer of every single-offer listing of an answer that sells `want` for `have`, cheapest first,
 /// at most [`SHOWN`], with their median. `None` when nothing qualifies.
 pub fn parse(json: &Value, have: &str, want: &str) -> Option<Bulk> {
     let mut offers: Vec<Offer> = json
@@ -63,7 +84,12 @@ pub fn parse(json: &Value, have: &str, want: &str) -> Option<Bulk> {
 
 fn offer(entry: &Value, have: &str, want: &str) -> Option<Offer> {
     let listing = entry.get("listing")?;
-    let found = listing.get("offers")?.as_array()?.iter().find_map(|offer| {
+    // A listing that trades several things at once has no price of its own for one of them.
+    let offers = listing.get("offers")?.as_array()?;
+    if offers.len() != 1 {
+        return None;
+    }
+    let found = offers.iter().find_map(|offer| {
         let (pay, item) = (offer.get("exchange")?, offer.get("item")?);
         if pay.get("currency")?.as_str()? != have || item.get("currency")?.as_str()? != want {
             return None;
@@ -110,11 +136,23 @@ pub fn weighted_median(offers: &[Offer]) -> Option<f64> {
 /// the lowercased name.
 pub fn ids(json: &Value) -> HashMap<String, String> {
     let groups = json.get("result").and_then(Value::as_array).into_iter().flatten();
-    groups
+    let entries = groups
         .flat_map(|group| group.get("entries").and_then(Value::as_array).into_iter().flatten())
         .filter_map(|entry| Some((entry.get("text")?.as_str()?.to_lowercase(), entry.get("id")?.as_str()?.to_owned())))
-        .filter(|(_, id)| id != "sep")
-        .collect()
+        .filter(|(_, id)| id != "sep");
+    let mut ids = HashMap::new();
+    for (text, id) in entries {
+        // Several maps share a text (`Map (Tier 16)` is a plain map, a blighted one, a
+        // memory-influenced one...): the blighted kinds are named as the game names them, and the
+        // plain text stays the first entry's, the plain map's.
+        for (prefix, name) in [("blighted-map-", "blighted "), ("blight-ravaged-map-", "blight-ravaged ")] {
+            if id.starts_with(prefix) {
+                ids.entry(format!("{name}{text}")).or_insert_with(|| id.clone());
+            }
+        }
+        ids.entry(text).or_insert(id);
+    }
+    ids
 }
 
 /// Where the game's content network serves the images the static data names.

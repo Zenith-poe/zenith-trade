@@ -40,19 +40,36 @@ impl Quote {
     }
 }
 
-/// How the list is asked for an item: by its name line, or by its only line.
+/// How the list is asked for an item: by its name line, or by its only line. A map that is not
+/// unique by its base: the name of a rare map is made up.
 pub fn name_of(item: &Item) -> &str {
+    if is_map(item) && item.rarity != Rarity::Unique {
+        return &item.base;
+    }
     item.name.as_deref().unwrap_or(&item.base)
 }
 
+fn is_map(item: &Item) -> bool {
+    item.class == "Maps"
+}
+
+/// Whether the item may be priced from the list, before the list is asked: what
+/// [`is_stackable`] could say yes to.
+pub fn may_be_stackable(item: &Item) -> bool {
+    match item.rarity {
+        Rarity::Currency | Rarity::DivinationCard | Rarity::Normal | Rarity::Other(_) | Rarity::None => true,
+        _ => false,
+    }
+}
+
 /// Whether the item is priced from the list alone: a currency or a divination card, whatever
-/// the list holds, and a plain item (a fragment, a scarab) that the list knows by name.
+/// the list holds, and a plain item (a fragment, a scarab, a plain map) that the list knows by
+/// name. A magic or rare map is searched instead.
 pub fn is_stackable(item: &Item, list: Option<&PriceList>) -> bool {
+    let known = || list.is_some_and(|list| !list.find(name_of(item)).is_empty());
     match item.rarity {
         Rarity::Currency | Rarity::DivinationCard => true,
-        Rarity::Normal | Rarity::Other(_) | Rarity::None => {
-            list.is_some_and(|list| !list.find(name_of(item)).is_empty())
-        }
+        Rarity::Normal | Rarity::Other(_) | Rarity::None => known(),
         _ => false,
     }
 }

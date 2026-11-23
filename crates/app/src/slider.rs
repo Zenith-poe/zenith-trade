@@ -94,7 +94,8 @@ impl Scale {
 /// over it, one of its fields is being typed in, or its slider is being held. A property has no
 /// slider.
 pub fn scale_of(check: &Check, row: &Row, engaged: bool) -> Option<Scale> {
-    let searched = row.kind.is_some() && check.mark(row) == Mark::Searched && check.leads(row);
+    // A stat asked for at most has no slider: the slider sets a minimum.
+    let searched = row.kind.is_some() && check.mark(row) == Mark::Searched && check.leads(row) && !row.filter.is_some_and(|filter| check.upper(filter));
     Scale::of(row.range).map(|scale| scale.with_value(row.value)).filter(|_| searched && engaged)
 }
 

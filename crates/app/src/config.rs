@@ -26,7 +26,7 @@ use zenith_core::matching::Slack;
 pub const VARIABLE: &str = "ZENITH_CONFIG";
 
 /// The keys of the file that are written from here. Every other key is left as it is.
-const OWN_KEYS: [&str; 8] = ["status", "currency", "listed", "stash_scroll", "theme", "marker", "league", "default_min"];
+const OWN_KEYS: [&str; 9] = ["status", "currency", "listed", "stash_scroll", "map_bulk", "theme", "marker", "league", "default_min"];
 
 /// How "any" is written for a setting that is pinned to no value at all.
 const ANY: &str = "any";
@@ -69,6 +69,8 @@ pub struct Config {
     pub listed: Option<Option<Listed>>,
     /// Ctrl and the wheel change stash tab anywhere in the game: see `stash`.
     pub stash_scroll: bool,
+    /// A map may be priced on the bulk exchange: off when the file says nothing.
+    pub map_bulk: bool,
     /// The colours of the panel; Forge when the file says nothing.
     pub theme: Theme,
     /// How a searched mod is marked; the edge bar when the file says nothing.
@@ -88,7 +90,7 @@ impl Default for Config {
 
 impl Config {
     /// Nothing pinned, and the stash scroll on: what no file gives.
-    pub const NONE: Self = Self { status: None, currency: None, listed: None, stash_scroll: true, theme: Theme::Forge, marker: Marker::Bar, league: None, slack: Slack::Exact };
+    pub const NONE: Self = Self { status: None, currency: None, listed: None, stash_scroll: true, map_bulk: false, theme: Theme::Forge, marker: Marker::Bar, league: None, slack: Slack::Exact };
 
     pub fn pinned(&self, setting: Setting) -> bool {
         match setting {
@@ -165,6 +167,9 @@ impl Config {
         if !self.stash_scroll {
             pins.insert("stash_scroll".into(), Value::Bool(false));
         }
+        if self.map_bulk {
+            pins.insert("map_bulk".into(), Value::Bool(true));
+        }
         if self.theme != Theme::Forge {
             pins.insert("theme".into(), Value::from(self.theme.key()));
         }
@@ -240,6 +245,11 @@ impl Config {
                 // Yes or no; anything else leaves it on.
                 "stash_scroll" => {
                     config.stash_scroll = value.as_bool().unwrap_or(true);
+                    value.is_boolean()
+                }
+                // Yes or no; anything else leaves it off.
+                "map_bulk" => {
+                    config.map_bulk = value.as_bool().unwrap_or(false);
                     value.is_boolean()
                 }
                 "theme" => {

@@ -43,6 +43,37 @@ const DEFENCES: [&str; 4] = ["Armour", "Evasion", "Energy Shield", "Ward"];
 pub const ARMOUR: &str = "ar";
 pub const EVASION: &str = "ev";
 pub const ENERGY_SHIELD: &str = "es";
+/// A shield's chance to block.
+pub const BLOCK: &str = "block";
+/// Where the defence of a piece of armour lies in the range of its base type, in percent.
+pub const BASE_PERCENTILE: &str = "base_percentile";
+/// What a map adds: atlas drops, item rarity, pack size, item quantity.
+pub const MAP_BONUS: &str = "map_bonus";
+pub const MAP_RARITY: &str = "map_iir";
+pub const MAP_PACK_SIZE: &str = "map_packsize";
+pub const MAP_QUANTITY: &str = "map_iiq";
+/// What a map drops more of, and its number of affixes: pseudo stats of the site, which the
+/// request asks for under their own ids (see [`map_pseudo`]).
+pub const MAP_MORE_MAPS: &str = "map_more_maps";
+pub const MAP_MORE_SCARABS: &str = "map_more_scarabs";
+pub const MAP_MORE_CURRENCY: &str = "map_more_currency";
+pub const MAP_MORE_CARDS: &str = "map_more_cards";
+pub const MAP_MODIFIERS: &str = "map_modifiers";
+
+/// The rows of a map written as a percent added.
+const MAP_PERCENTS: [&str; 8] = [MAP_BONUS, MAP_QUANTITY, MAP_RARITY, MAP_PACK_SIZE, MAP_MORE_MAPS, MAP_MORE_SCARABS, MAP_MORE_CURRENCY, MAP_MORE_CARDS];
+
+/// The site's pseudo stat that a property row of a map stands for.
+pub fn map_pseudo(id: &str) -> Option<&'static str> {
+    Some(match id {
+        MAP_MORE_MAPS => "pseudo.pseudo_map_more_map_drops",
+        MAP_MORE_SCARABS => "pseudo.pseudo_map_more_scarab_drops",
+        MAP_MORE_CURRENCY => "pseudo.pseudo_map_more_currency_drops",
+        MAP_MORE_CARDS => "pseudo.pseudo_map_more_card_drops",
+        MAP_MODIFIERS => "pseudo.pseudo_number_of_affix_mods",
+        _ => return None,
+    })
+}
 pub const PHYSICAL_DPS: &str = "pdps";
 pub const ELEMENTAL_DPS: &str = "edps";
 /// Every damage together: physical, elemental and chaos.
@@ -80,6 +111,9 @@ pub struct Matched {
     /// The mod as a person reads it, without the roll ranges; one line per line of the mod,
     /// separated by line feeds.
     pub label: String,
+    /// The less of the stat, the better (`#% increased Elemental Damage taken`): what the item
+    /// has is the most a search asks for, not the least.
+    pub lower: bool,
 }
 
 /// One line of the search panel: a property or a mod, and the bounds asked for.
@@ -122,12 +156,14 @@ pub fn match_mod(m: &Mod, local: Local, stats: &Stats) -> Matched {
             value: found.value,
             range: found.range,
             label,
+            lower: found.lower,
         },
         None => Matched {
             id: None,
             value: None,
             range: None,
             label,
+            lower: false,
         },
     }
 }
@@ -153,7 +189,8 @@ fn shown_dps(value: f64) -> f64 {
     }
 }
 
-/// The filters a search starts with: the defences and, on a weapon, the damage per second;
+/// The filters a search starts with: the defences (and a shield's chance to block, on) and, on a
+/// weapon, the damage per second;
 /// then the pseudo totals (see [`crate::pseudo`]); then every matched mod, switched on when it is of the first two tiers or fractured. A mod
 /// in no list is not a filter.
 ///
@@ -184,6 +221,10 @@ pub fn default_filters(
     let physical_leads = physical_dps.unwrap_or(0.0) >= elemental_dps.unwrap_or(0.0);
     let lone_chaos = kinds == [false, false, true];
     let whole = |value: Option<u32>| value.map(f64::from);
+    let valuable_drops = props.more_currency.or(props.more_scarabs).or(props.more_cards);
+    let is_map = props.atlas_drops.is_some() || props.map_tier.is_some();
+    let affix_count = mods.iter().filter(|m| matches!(m.kind, ModKind::Prefix | ModKind::Suffix)).count();
+    let affixes = (is_map && affix_count >= 8).then_some(affix_count as f64);
     let properties = [
         (ARMOUR, "Armour", whole(props.armour_q20()), true),
         (EVASION, "Evasion", whole(props.evasion_q20()), true),
@@ -193,6 +234,19 @@ pub fn default_filters(
             whole(props.energy_shield_q20()),
             true,
         ),
+        (BLOCK, "Chance to block", whole(props.block).filter(|_| local == Local::Armour), true),
+        // A map: what it adds, as the site's own players price it. The rarity starts off when the
+        // map drops more of something that sells (currency, scarabs, cards), and more maps off.
+        (MAP_QUANTITY, "Item Quantity", whole(props.item_quantity), true),
+        (MAP_BONUS, "Atlas Drops", whole(props.atlas_drops), true),
+        (MAP_RARITY, "Item Rarity", whole(props.item_rarity), valuable_drops.is_none()),
+        (MAP_PACK_SIZE, "Pack Size", whole(props.pack_size), true),
+        (MAP_MORE_MAPS, "More Maps", whole(props.more_maps), false),
+        (MAP_MORE_SCARABS, "More Scarabs", whole(props.more_scarabs), true),
+        (MAP_MORE_CURRENCY, "More Currency", whole(props.more_currency), true),
+        (MAP_MORE_CARDS, "More Divination Cards", whole(props.more_cards), true),
+        // Eight affixes or more: a map that many have not.
+        (MAP_MODIFIERS, "Modifiers", affixes, true),
         (
             PHYSICAL_DPS,
             "Physical DPS",
@@ -232,7 +286,13 @@ pub fn default_filters(
                 min: Some(value),
                 max: None,
                 on,
-                label: if id == CRITICAL_CHANCE || id == ATTACKS_PER_SECOND {
+                label: if id == BLOCK {
+                    format!("{name} {value}%")
+                } else if MAP_PERCENTS.contains(&id) {
+                    format!("{name} +{value}%")
+                } else if id == MAP_MODIFIERS {
+                    format!("{name} {value}")
+                } else if id == CRITICAL_CHANCE || id == ATTACKS_PER_SECOND {
                     format!("{name} {value}")
                 } else {
                     format!("{name} {}", shown_dps(value))
@@ -258,8 +318,9 @@ pub fn default_filters(
     let mut sums: Vec<(String, Option<f64>)> = Vec::new();
     for m in mods {
         let matched = match_mod(m, local, stats);
-        let Some(id) = matched.id else { continue };
-        let on = matches!(m.tier, Some(1 | 2)) || m.fractured || m.corruption;
+        let Some(id) = matched.id.clone() else { continue };
+        // An enchant is what the item is, as the passives of a cluster jewel.
+        let on = matches!(m.tier, Some(1 | 2)) || m.fractured || m.corruption || m.vestigial() || m.kind == ModKind::Enchant;
         match filters.iter_mut().find(|filter| filter.id == id) {
             Some(filter) => {
                 // The same stat on another line: the site adds them up.
@@ -268,16 +329,24 @@ pub fn default_filters(
                     .find(|(seen, _)| *seen == id)
                     .expect("recorded with its filter");
                 sum.1 = add_values(sum.1, matched.value);
-                filter.min = sum.1;
+                if matched.lower {
+                    filter.max = sum.1;
+                } else {
+                    filter.min = sum.1;
+                }
                 filter.on |= on;
                 filter.label = format!("{} + {}", filter.label, matched.label);
             }
             None => {
                 sums.push((id.clone(), matched.value));
+                let (min, max, on) = match cluster_rule(&matched) {
+                    Some(rule) => rule,
+                    None => (matched.value.filter(|_| !matched.lower), matched.value.filter(|_| matched.lower), on),
+                };
                 filters.push(Filter {
                     id,
-                    min: matched.value,
-                    max: None,
+                    min,
+                    max,
                     on,
                     label: matched.label,
                     tier: m.tier,
@@ -295,6 +364,41 @@ pub fn default_filters(
     filters
 }
 
+/// The words a `#% increased` defence line names, per defence: armour, evasion, energy shield, ward.
+const DEFENCE_WORDS: [&[&str]; 4] = [&["Armour"], &["Evasion", "Evasion Rating"], &["Energy Shield"], &["Ward"]];
+
+/// Whether a line is a `#% increased` line of the defence at `at` (a hybrid line counts for each
+/// defence it names), and no other kind of line.
+fn increases_defence(template: &str, at: usize) -> bool {
+    let Some(names) = template.strip_prefix("#% increased ") else { return false };
+    let words: Vec<&str> = names.split(", ").flat_map(|part| part.split(" and ")).collect();
+    words.iter().all(|word| DEFENCE_WORDS.iter().any(|known| known.contains(word))) && words.iter().any(|word| DEFENCE_WORDS[at].contains(word))
+}
+
+/// The flat `+# to` line of the defence at `at`.
+fn adds_defence(template: &str, at: usize) -> bool {
+    template == ["+# to Armour", "+# to Evasion Rating", "+# to maximum Energy Shield", "+# to Ward"][at]
+}
+
+/// Where the first defence the item has (armour, evasion, energy shield, ward: the larger the
+/// value, the more precise) lies in the range its base type rolls it in, from 0 to 100. The roll
+/// is the defence taken back to no quality, no local increase and no local flat: the quality
+/// counts for nothing on an item whose mods say it does not raise defences. `ranges` are those of
+/// the base, in the order above; a defence without a range is skipped. `None` for an item without
+/// a defence that has one.
+pub fn base_percentile(mods: &[Mod], props: &Properties, ranges: [Option<(u32, u32)>; 4]) -> Option<u32> {
+    let totals = [props.armour, props.evasion, props.energy_shield, props.ward];
+    let (at, total, (low, high)) = (0..4).find_map(|at| Some((at, totals[at]?, ranges[at].filter(|(low, high)| low < high)?)))?;
+    let sum = |wanted: fn(&str, usize) -> bool| -> f64 {
+        mods.iter().flat_map(|m| &m.lines).filter(|line| wanted(&line.template, at)).filter_map(|line| line.values.first()).sum()
+    };
+    let (increase, flat) = (sum(increases_defence), sum(adds_defence));
+    let quality = if props.quality_spares_defences { 0.0 } else { f64::from(props.quality) };
+    let roll = f64::from(total) / (1.0 + quality / 100.0) / (1.0 + increase / 100.0) - flat;
+    let percentile = (roll - f64::from(low)) / f64::from(high - low) * 100.0;
+    Some(percentile.round().clamp(0.0, 100.0) as u32)
+}
+
 /// The filters of a unique item, which is searched by its name: every matched mod, switched
 /// off, with the value the item has for the minimum it is asked from once it is switched
 /// on. The same unique is wanted with this roll or a better one, so nothing is taken off the
@@ -305,11 +409,11 @@ pub fn unique_filters(mods: &[Mod], local: Local, stats: &Stats) -> Vec<Filter> 
             let matched = match_mod(m, local, stats);
             Some(Filter {
                 id: matched.id?,
-                min: matched.value,
-                max: None,
+                min: matched.value.filter(|_| !matched.lower),
+                max: matched.value.filter(|_| matched.lower),
                 // What corrupting gave decides the price, and a Foulborn mod says which Foulborn
                 // version the item is: asked for, with its exact value.
-                on: m.corruption || m.foulborn() || m.kind == ModKind::Enchant,
+                on: m.corruption || m.foulborn() || m.vestigial() || m.kind == ModKind::Enchant,
                 label: matched.label,
                 tier: m.tier,
             })
@@ -414,6 +518,7 @@ struct Found {
     id: String,
     value: Option<f64>,
     range: Option<(f64, f64)>,
+    lower: bool,
 }
 
 /// The id of a mod, its value and the range of it: the lines as one text, then each line,
@@ -490,9 +595,49 @@ fn find_text(text: &str, numbers: &[Number], texts: &Texts, place: Place) -> Opt
                 id: id.clone(),
                 value,
                 range,
+                lower: lower_is_better(&text),
             })
         })
     })
+}
+
+/// The bounds of the enchants of a cluster jewel, and whether they are asked for. Its number of
+/// passives is worth most at the fewest a jewel of its size can have: 2, 4 or 8, 5 for a medium
+/// one with a socket. A number in that best range is asked at most, one over it at least. Its
+/// jewel sockets come with its size: not asked for.
+fn cluster_rule(matched: &Matched) -> Option<(Option<f64>, Option<f64>, bool)> {
+    let label = matched.label.as_str();
+    if label.ends_with("Added Passive Skill is a Jewel Socket") || label.ends_with("Added Passive Skills are Jewel Sockets") {
+        return Some((matched.value, None, false));
+    }
+    if !(label.starts_with("Adds ") && label.ends_with(" Passive Skills")) {
+        return None;
+    }
+    let value = matched.value?;
+    Some(match value as u32 {
+        4 | 5 => (None, Some(5.0), true),
+        2 | 8 | 9 => (None, Some(value), true),
+        _ => (Some(value), None, true),
+    })
+}
+
+/// Whether the less of a stat is the better, by the text of the lists it matched: more damage
+/// taken, higher costs and requirements, stronger curses and ailments on the player, life or mana
+/// lost. A "reduced" or "less" wording found as its "increased" or "more" one has a negative
+/// value, which keeps the comparison right.
+pub fn lower_is_better(text: &str) -> bool {
+    let raised = (text.contains("increased") || text.contains("more ")) && !text.contains("reduced") && !text.contains("less ");
+    let on_you = text.contains(" on you") || text.contains(" on You");
+    let suffered = ["Curse", "Chill", "Shock", "Freeze", "Ignite", "Ailment", "Poison", "Bleed"].iter().any(|word| text.contains(word));
+    (raised && text.contains("Damage taken"))
+        || (raised && text.contains("Attribute Requirements"))
+        || (text.contains("Cost") && !text.contains("Efficiency") && (raised || text.contains("to Total")))
+        || (raised && text.contains("Charges used"))
+        || (raised && on_you && suffered)
+        || (on_you && text.contains("expire") && text.contains("slower"))
+        || text.contains("% chance to be ")
+        || text.starts_with("Lose ")
+        || text.contains("Hiring Fee")
 }
 
 /// The most numbers of a text for which every way of writing some of them out is tried.
@@ -551,6 +696,11 @@ fn wordings(text: &str) -> Vec<(String, Turn)> {
             .map(|text| (text, Turn::Negated)),
     );
     wordings.extend(count_additional(text).map(|text| (text, Turn::Counted)));
+    // A cluster jewel writes its one socket in the singular: `1 Added Passive Skill is a Jewel
+    // Socket`, which the lists have in the plural.
+    if text.contains("Added Passive Skill is a Jewel Socket") {
+        wordings.push((text.replace("Added Passive Skill is a Jewel Socket", "Added Passive Skills are Jewel Sockets"), Turn::Kept));
+    }
     wordings
 }
 

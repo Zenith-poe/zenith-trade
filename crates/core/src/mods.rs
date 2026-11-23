@@ -65,6 +65,11 @@ pub struct Mod {
 
 impl Mod {
     /// Whether the Foulborn mechanic changed this mod: its lines are marked `(mutated)`, or its brace line says `Foulborn Unique Modifier`.
+    /// The implicit a vestigial item has: as an enchant, it is what the item is sold for.
+    pub fn vestigial(&self) -> bool {
+        matches!(&self.kind, ModKind::Other(kind) if kind.starts_with("Vestigial"))
+    }
+
     pub fn foulborn(&self) -> bool {
         matches!(&self.kind, ModKind::Other(kind) if kind == "mutated" || kind.starts_with("Foulborn")) || self.tags.iter().any(|tag| tag == "mutated")
     }
@@ -309,7 +314,9 @@ fn parse_line(line: &str) -> Option<(ModLine, Option<&str>)> {
 }
 
 fn without_unscalable(line: &str) -> &str {
-    line.strip_suffix(UNSCALABLE).unwrap_or(line).trim_end()
+    let line = line.strip_suffix(UNSCALABLE).unwrap_or(line).trim_end();
+    // A reminder the game cut short: `Map is occupied by The Purifier(...)`.
+    line.strip_suffix("(...)").unwrap_or(line).trim_end()
 }
 
 /// Splits `<text> (<mark>)`, where the mark is one word in lower case, as in `(implicit)`.

@@ -24,6 +24,10 @@ pub struct Pack {
     /// site tells it by (`Arc of Oscillating` to `Arc`, `alt_y`).
     #[serde(default)]
     pub gems: BTreeMap<String, (String, String)>,
+    /// The areas a blighted map can be, by name, to the id the site tells them by
+    /// (`Arcade` to `44259`): a blighted map is searched as its area.
+    #[serde(default)]
+    pub blight_areas: BTreeMap<String, String>,
     /// Item class as written in copied items (`Body Armours`) to trade
     /// category id (`armour.chest`).
     pub categories: BTreeMap<String, String>,

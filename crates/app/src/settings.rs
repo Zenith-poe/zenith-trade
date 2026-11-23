@@ -710,6 +710,14 @@ impl Window {
                         self.apply();
                     }
                 });
+                Self::row(ui, "Map bulk", &mut |ui| {
+                    let mut on = self.config.map_bulk;
+                    ui.checkbox(&mut on, label("Bulk exchange for maps"));
+                    if on != self.config.map_bulk {
+                        self.config.map_bulk = on;
+                        self.apply();
+                    }
+                });
                 let ctx = ui.ctx().clone();
                 let league = self.config.league.map(|l| l.as_str().to_owned());
                 Self::row(ui, "Game data", &mut |ui| {

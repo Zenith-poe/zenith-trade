@@ -99,7 +99,7 @@ pub fn build(
     built: &str,
 ) -> Result<Pack, BuildError> {
     let stats = stats(stats_json).map_err(BuildError::Stats)?;
-    let (bases, uniques, gems) = items(items_json).map_err(BuildError::Items)?;
+    let (bases, uniques, gems, blight_areas) = items(items_json).map_err(BuildError::Items)?;
     let known = category_ids(filters_json).map_err(BuildError::Filters)?;
     let categories = CLASSES
         .iter()
@@ -112,6 +112,7 @@ pub fn build(
         bases,
         uniques,
         gems,
+        blight_areas,
         categories,
     })
 }
@@ -156,10 +157,11 @@ type Gems = BTreeMap<String, (String, String)>;
 /// An entry with a name is a unique item; its other variants (`disc`)
 /// repeat the same name and base. An entry with a text and no name is a
 /// variant whose `type` is a key rather than a name, and is left out.
-fn items(json: &str) -> Result<(Bases, Uniques, Gems), String> {
+fn items(json: &str) -> Result<(Bases, Uniques, Gems, BTreeMap<String, String>), String> {
     let mut bases: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut uniques: BTreeSet<(String, String)> = BTreeSet::new();
     let mut gems = Gems::new();
+    let mut areas = BTreeMap::new();
     for group in parse::<Group<Entry>>(json)? {
         let is_gem = group.id == "gem";
         let names = bases.entry(group.id).or_default();
@@ -175,7 +177,9 @@ fn items(json: &str) -> Result<(Bases, Uniques, Gems), String> {
                     names.insert(base);
                 }
                 (None, Some(text)) => {
-                    if let (true, Some(disc)) = (is_gem, entry.disc) {
+                    if let Some(area) = text.strip_prefix("Blighted Map (").and_then(|rest| rest.strip_suffix(')')) {
+                        areas.insert(area.to_owned(), base);
+                    } else if let (true, Some(disc)) = (is_gem, entry.disc) {
                         gems.insert(text, (base, disc));
                     }
                 }
@@ -189,7 +193,7 @@ fn items(json: &str) -> Result<(Bases, Uniques, Gems), String> {
         .into_iter()
         .map(|(group, names)| (group, names.into_iter().collect()))
         .collect();
-    Ok((bases, uniques.into_iter().collect(), gems))
+    Ok((bases, uniques.into_iter().collect(), gems, areas))
 }
 
 /// The ids the item category filter offers.

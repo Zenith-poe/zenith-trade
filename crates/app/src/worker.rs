@@ -23,6 +23,7 @@ use zenith_trade::{Bulk, Client, Listing};
 
 use crate::check::{self, Outcome, Way};
 use crate::config::Config;
+use crate::panel::icons;
 use crate::quote::{self, Quote};
 use crate::state::{self, Plan, Step, View};
 
@@ -329,17 +330,27 @@ impl Checker {
     /// divine when the item is worth a divine or more. A request that the limits do not allow is
     /// not sent; nothing is retried and a failure only leaves the offers out.
     fn bulk_offers(&mut self, check: &crate::check::Check) -> Vec<Bulk> {
-        let (Some(league), Some(quote)) = (self.league.clone(), check.result.quote.as_ref()) else {
+        let Some(quote) = check.result.quote.as_ref() else {
             return Vec::new();
         };
         let Some((each, _)) = quote.each else {
             return Vec::new();
         };
+        let dear = quote.divine.is_some_and(|rate| rate > 0.0 && each >= rate);
+        self.bulk_of(quote::name_of(&check.item), dear)
+    }
+
+    /// The live bulk offers for `name`, against chaos and, when it is `dear` (worth a divine or
+    /// more), against divine too.
+    fn bulk_of(&mut self, name: &str, dear: bool) -> Vec<Bulk> {
+        let Some(league) = self.league.clone() else {
+            return Vec::new();
+        };
         let mut haves = vec!["chaos"];
-        if quote.divine.is_some_and(|rate| rate > 0.0 && each >= rate) {
+        if dear {
             haves.push("divine");
         }
-        let id = match self.client.exchange_id(quote::name_of(&check.item)) {
+        let id = match self.client.exchange_id(name) {
             Ok(Some(id)) => id,
             Ok(None) => return Vec::new(),
             Err(error) => {
@@ -363,6 +374,17 @@ impl Checker {
             }
         }
         sets
+    }
+
+    /// A check priced on the bulk exchange (a map, see `check::bulk_name`): its outcome, whole.
+    fn bulk_outcome(&mut self, name: &str) -> crate::check::Outcome {
+        self.load_league();
+        if self.league.is_none() {
+            return crate::check::Outcome { problem: Some(state::NO_LEAGUE_LIST.into()), quote: self.quote.clone(), ..crate::check::Outcome::default() };
+        }
+        let bulk = self.bulk_of(name, false);
+        let problem = bulk.is_empty().then(|| format!("No bulk offers for {name}"));
+        crate::check::Outcome { league: self.league.clone(), quote: self.quote.clone(), bulk, problem, ..crate::check::Outcome::default() }
     }
 
     /// The view of a copied text with the price list's say in it.
@@ -497,6 +519,28 @@ impl Checker {
         self.quote = view.check().and_then(|check| check.result.quote.clone());
         emit(Step::Read(view.clone()));
 
+        // An unidentified unique waits for its pick: get the pictures of its candidates, then show
+        // the picker again with them.
+        if let View::Item(check) = &mut view
+            && check.picking()
+        {
+            let Some(kind) = icons::unique_type(&check.item.class).filter(|_| alive()) else { return };
+            let dir = self.price_path(self.league.as_deref().unwrap_or("Standard")).parent().map(Path::to_path_buf).unwrap_or_default();
+            let league = self.league.as_deref().unwrap_or("Standard");
+            let mut found = icons::unique_icons(&dir, league, kind, &user_agent());
+            // A league lists only the uniques sold in it: Standard has nearly all of them.
+            if league != "Standard" && check.candidates.iter().any(|name| !found.contains_key(name)) && alive() {
+                for (name, icon) in icons::unique_icons(&dir, "Standard", kind, &user_agent()) {
+                    found.entry(name).or_insert(icon);
+                }
+            }
+            if !found.is_empty() && alive() {
+                check.set_candidate_icons(&found);
+                emit(Step::Read(View::Item(check.clone())));
+            }
+            return;
+        }
+
         // A stackable is only its price: when the list is missing or old, get it before saying
         // more, and show the item again with the new one.
         if view.check().is_some_and(|check| check.plan == Plan::Stack) {
@@ -532,6 +576,12 @@ impl Checker {
         let Some(request) = view.check().and_then(check::request) else {
             return;
         };
+        if let Some(name) = check::bulk_name(&request) {
+            if alive() {
+                emit(Step::Found(self.bulk_outcome(name)));
+            }
+            return;
+        }
         let mut last = None;
         self.search(&request, alive, &mut |outcome| {
             last = Some(outcome.clone());
@@ -694,9 +744,10 @@ pub fn spawn(ctx: egui::Context, current: &'static AtomicU64) -> std::io::Result
             };
             match job {
                 Job::Check { text, pins, .. } => checker.run(&text, &pins, None, &alive, &mut send),
-                Job::Search { request, .. } => {
-                    checker.search(&request, &alive, &mut |outcome| send(Step::Found(outcome)));
-                }
+                Job::Search { request, .. } => match check::bulk_name(&request) {
+                    Some(name) => send(Step::Found(checker.bulk_outcome(name))),
+                    None => checker.search(&request, &alive, &mut |outcome| send(Step::Found(outcome))),
+                },
                 Job::League(_) => {}
             }
         }

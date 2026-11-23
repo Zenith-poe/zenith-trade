@@ -1,7 +1,7 @@
 //! What the panel shows, and the pure decisions around it: the first view of a copied text, the
 //! wording of each problem, the league to search in, and how prices and times are written.
 
-use zenith_core::matching::at_trade_quality;
+use zenith_core::matching::{BASE_PERCENTILE, at_trade_quality, base_percentile};
 use zenith_core::{
     Estimate, Filter, Item, Local, Mod, ModKind, Properties, Rarity, Stats, default_filters, estimate, is_pseudo, match_mod, parse_item,
     parse_mods, parse_properties, pseudo_totals, unique_filters,
@@ -106,7 +106,13 @@ impl View {
                 }
             }
             Step::Read(View::Item(read)) => match self {
-                View::Item(shown) if shown.same_reading(&read) => shown.result = read.result,
+                View::Item(shown) if shown.same_reading(&read) => {
+                    shown.result = read.result;
+                    // The pictures of the picker come after the first reading.
+                    if read.candidate_icons.iter().any(Option::is_some) {
+                        shown.candidate_icons = read.candidate_icons;
+                    }
+                }
                 _ => *self = View::Item(read),
             },
             Step::Read(view) => *self = view,
@@ -145,7 +151,7 @@ pub fn read_pinned(text: &str, pack: Option<&Pack>, pins: &Config) -> View {
 }
 
 /// `read_pinned`; `cover` is whether the local mods that a total row covers are hidden. The made-up
-/// views of the demo keep them in view.
+/// views of the demo keep them in view, and have no base percentile row.
 fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> View {
     let Ok(item) = parse_item(text) else {
         return View::Message(NOT_AN_ITEM.into());
@@ -157,7 +163,12 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
     // An unidentified unique has no name line: it is searched by its base, as a unique.
     let named_unique = unique && item.name.is_some() && item.identified;
     let gear = (matches!(item.rarity, Rarity::Normal | Rarity::Magic | Rarity::Rare) && categorised) || exact || (unique && !named_unique && categorised);
-    let mods = if unique || gear { parse_mods(&item) } else { Vec::new() };
+    // A magic or rare map is searched on the site; a plain one is priced from the list, by its base.
+    // A magic or rare map is searched on the site, by its properties or on the bulk exchange.
+    let map = item.class == "Maps" && matches!(item.rarity, Rarity::Magic | Rarity::Rare);
+    let mods = if unique || gear || map { parse_mods(&item) } else { Vec::new() };
+    // The implicits of a map share one header, each line its own stat: one filter per line.
+    let mods = if map { one_line_implicits(mods) } else { mods };
     let local = local_of(&item.class);
     let stats = pack.map(|pack| &pack.stats);
     let props = parse_properties(&item);
@@ -171,6 +182,7 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
         if let Some(stats) = stats {
             filters.extend(unique_filters(&mods, local, stats));
         }
+        add_base_percentile(&mut filters, &mods, &props, &item.base);
         (Plan::Unique, None)
     } else if item.rarity == Rarity::Gem {
         // By its name; a transfigured gem is its base gem and a discriminator.
@@ -181,6 +193,26 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
             None => Plan::Gem { name: name.to_owned(), disc: None },
         };
         (plan, None)
+    } else if map {
+        match pack {
+            None => (Plan::NeedsData, None),
+            Some(pack) => {
+                // What the map adds, on, and its implicits (a conqueror's citadel, a guardian, the
+                // Elder, the Originator's memories), on as well; its mods are there to switch on.
+                filters = default_filters(&mods, &props, Local::None, &pack.stats);
+                for filter in filters.iter_mut().filter(|filter| !is_property(&filter.id)) {
+                    filter.on = filter.id.starts_with("implicit.");
+                }
+                // A blighted map is searched as its area, which an older pack does not know.
+                match crate::check::blight_of(&item.base) {
+                    Some((_, area)) => match pack.blight_areas.get(area) {
+                        Some(id) => (Plan::Gear { category: crate::check::MAP_CATEGORY.to_owned(), base: Some(id.clone()) }, None),
+                        None => (Plan::NeedsData, None),
+                    },
+                    None => (Plan::Gear { category: crate::check::MAP_CATEGORY.to_owned(), base: Some(item.base.clone()) }, None),
+                }
+            }
+        }
     } else if !gear {
         (Plan::Nothing, Some(if unique { UNIDENTIFIED } else { NOT_PRICED }))
     } else {
@@ -190,6 +222,9 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
             Some(pack) => match pack.categories.get(&item.class) {
                 Some(category) => {
                     filters = default_filters(&mods, &props, local, &pack.stats);
+                    if cover {
+                        add_base_percentile(&mut filters, &mods, &props, &item.base);
+                    }
                     let (category, base) = (category.clone(), base_of(&item, pack));
                     (if exact { Plan::Exact { category, base } } else { Plan::Gear { category, base } }, None)
                 }
@@ -198,16 +233,31 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
         }
     };
     let mut rows = rows_of(&mods, local, stats, &filters, &props);
+    shorten_cluster(&mut rows);
+    // A map is priced by what it adds and its implicits: its other mods wait behind the Hidden
+    // switch.
+    if map {
+        for row in rows.iter_mut().filter(|row| row.kind.is_some() && !row.implicit) {
+            row.hidden = true;
+        }
+        any_boss(&mut rows, &mut filters);
+    }
     if exact {
         exact_filters(&mut filters, &rows);
     }
     if unique {
         hide_fixed(&mut rows, &mut filters, &mods);
+        if let Some(name) = item.name.as_deref().filter(|_| named_unique) {
+            mark_variants(&mut rows, &mut filters, &mods, &zenith_data::unique_variants(name));
+        }
     }
     if cover && matches!(plan, Plan::Gear { .. }) && !unique {
         hide_covered(&mut rows, &mut filters, &mods, local);
     }
     let mut check = Check::new(item, rows, filters, plan);
+    // A map goes to the bulk exchange only when the settings allow it.
+    check.bulk_allowed = pins.map_bulk;
+    check.options.bulk &= pins.map_bulk;
     // An unidentified unique: the uniques of its base are there to choose from.
     if let Some(pack) = pack.filter(|_| unique && !named_unique) {
         let names = pack.uniques_of(&check.item.base);
@@ -216,6 +266,27 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
     pins.apply(&mut check.options);
     check.result.problem = problem.map(str::to_owned);
     View::Item(check)
+}
+
+/// The "Base percentile" row of a piece of armour, switched off, last of the filters (the rows list the properties first): where
+/// its defence lies in the range its base type rolls it in.
+fn add_base_percentile(filters: &mut Vec<Filter>, mods: &[Mod], props: &Properties, base: &str) {
+    let Some(percentile) = base_percentile(mods, props, zenith_data::base_defences(base)) else { return };
+    let value = f64::from(percentile);
+    filters.push(Filter { id: BASE_PERCENTILE.to_owned(), min: Some(value), max: None, on: false, label: format!("Base percentile {percentile}%"), tier: None });
+}
+
+/// Every line of an implicit mod as a mod of its own.
+fn one_line_implicits(mods: Vec<Mod>) -> Vec<Mod> {
+    mods.into_iter()
+        .flat_map(|m| {
+            if m.kind == ModKind::Implicit && m.lines.len() > 1 {
+                m.lines.iter().map(|line| Mod { lines: vec![line.clone()], ..m.clone() }).collect()
+            } else {
+                vec![m]
+            }
+        })
+        .collect()
 }
 
 /// The damage, critical strike and speed rows of a unique weapon, all off unless the unique has
@@ -266,6 +337,168 @@ fn hide_fixed(rows: &mut [Row], filters: &mut [Filter], mods: &[Mod]) {
     }
 }
 
+/// Marks the rows of a unique's variant pool, and shows them whatever else hides them. A variant
+/// line without a rolled number is searched by default; one with a rolled number is shown, off.
+/// What the small passives of a cluster jewel grant, by the line without its numbers, and the
+/// short name the panel gives it. The first line of a pair (`Axe ...` then `Sword ...`) names both.
+const CLUSTER_SMALL: [(&str, &str); 51] = [
+    ("Axe Attacks deal #% increased Damage with Hits and Ailments", "Axe and Sword damage"),
+    ("Staff Attacks deal #% increased Damage with Hits and Ailments", "Staff and Mace damage"),
+    ("Claw Attacks deal #% increased Damage with Hits and Ailments", "Claw and Dagger damage"),
+    ("#% increased Damage with Bows", "Bow damage"),
+    ("Wand Attacks deal #% increased Damage with Hits and Ailments", "Wand damage"),
+    ("#% increased Damage with Two Handed Weapons", "Two-handed damage"),
+    ("#% increased Attack Damage while Dual Wielding", "Dual wield damage"),
+    ("#% increased Attack Damage while holding a Shield", "Shield attack damage"),
+    ("#% increased Attack Damage", "Attack damage"),
+    ("#% increased Spell Damage", "Spell damage"),
+    ("#% increased Elemental Damage", "Elemental damage"),
+    ("#% increased Physical Damage", "Physical damage"),
+    ("#% increased Fire Damage", "Fire damage"),
+    ("#% increased Lightning Damage", "Lightning damage"),
+    ("#% increased Cold Damage", "Cold damage"),
+    ("#% increased Chaos Damage", "Chaos damage"),
+    ("Minions deal #% increased Damage", "Minion damage"),
+    ("#% increased Burning Damage", "Burning damage"),
+    ("#% increased Chaos Damage over Time", "Chaos damage over time"),
+    ("#% increased Physical Damage over Time", "Physical damage over time"),
+    ("#% increased Cold Damage over Time", "Cold damage over time"),
+    ("#% increased Damage over Time", "Damage over time"),
+    ("#% increased Effect of Non-Damaging Ailments", "Non-damaging ailments"),
+    ("#% increased effect of Non-Curse Auras from your Skills", "Aura effect"),
+    ("#% increased Effect of your Curses", "Curse effect"),
+    ("#% increased Damage while affected by a Herald", "Herald damage"),
+    ("Minions deal #% increased Damage while you are affected by a Herald", "Minion Herald damage"),
+    ("Exerted Attacks deal #% increased Damage", "Exerted attack damage"),
+    ("#% increased Critical Strike Chance", "Critical strike chance"),
+    ("Minions have #% increased maximum Life", "Minion life"),
+    ("#% increased Area Damage", "Area damage"),
+    ("#% increased Projectile Damage", "Projectile damage"),
+    ("#% increased Trap Damage", "Trap and Mine damage"),
+    ("#% increased Totem Damage", "Totem damage"),
+    ("#% increased Brand Damage", "Brand damage"),
+    ("Channelling Skills deal #% increased Damage", "Channelling damage"),
+    ("#% increased Flask Effect Duration", "Flask duration"),
+    ("#% increased Life Recovery from Flasks", "Flask recovery"),
+    ("#% increased maximum Life", "Life"),
+    ("#% increased maximum Energy Shield", "Energy shield"),
+    ("#% increased maximum Mana", "Mana"),
+    ("#% increased Armour", "Armour"),
+    ("#% increased Evasion Rating", "Evasion"),
+    ("+#% Chance to Block Attack Damage", "Attack block"),
+    ("#% Chance to Block Spell Damage", "Spell block"),
+    ("+#% to Fire Resistance", "Fire resistance"),
+    ("+#% to Cold Resistance", "Cold resistance"),
+    ("+#% to Lightning Resistance", "Lightning resistance"),
+    ("+#% to Chaos Resistance", "Chaos resistance"),
+    ("+#% chance to Suppress Spell Damage", "Spell suppression"),
+    ("#% increased Mana Reservation Efficiency of Skills", "Reservation efficiency"),
+];
+
+/// A text with every number written `#`.
+fn hashed(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_number = false;
+    for c in text.chars() {
+        if c.is_ascii_digit() || (in_number && c == '.') {
+            if !in_number {
+                out.push('#');
+            }
+            in_number = true;
+        } else {
+            in_number = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A line of a cluster jewel as short as a player names it: `Herald damage` for what its small
+/// passives grant, `5 passives`, a notable by its name alone.
+fn cluster_short(line: &str) -> Option<String> {
+    if let Some(rest) = line.strip_prefix(CLUSTER_GRANT) {
+        let rest = hashed(rest);
+        return CLUSTER_SMALL.iter().find(|(text, _)| *text == rest).map(|(_, short)| (*short).to_owned());
+    }
+    if let Some(count) = line.strip_prefix("Adds ").and_then(|rest| rest.strip_suffix(" Passive Skills")) {
+        return Some(format!("{count} passives"));
+    }
+    if let Some(rest) = line.strip_prefix("Added Small Passive Skills also grant: ") {
+        return Some(format!("Small: {rest}"));
+    }
+    line.strip_prefix("1 Added Passive Skill is ").filter(|_| !is_cluster_socket(line)).map(str::to_owned)
+}
+
+/// The second line of a pair of what the small passives of a cluster jewel grant: the copy writes
+/// it on its own, and the first line names both.
+const CLUSTER_SECOND: [&str; 6] = [
+    "Sword Attacks deal #% increased Damage with Hits and Ailments",
+    "Mace or Sceptre Attacks deal #% increased Damage with Hits and Ailments",
+    "Dagger Attacks deal #% increased Damage with Hits and Ailments",
+    "#% increased Damage Over Time with Bow Skills",
+    "#% increased Mine Damage",
+    "#% increased Mana Recovery from Flasks",
+];
+
+const CLUSTER_GRANT: &str = "Added Small Passive Skills grant: ";
+
+/// The jewel sockets of a cluster jewel, which come with its size: one for a medium, two for a
+/// large.
+fn is_cluster_socket(line: &str) -> bool {
+    line.ends_with("Added Passive Skill is a Jewel Socket") || line.ends_with("Added Passive Skills are Jewel Sockets")
+}
+
+/// Every line of a cluster jewel the panel can say shorter; its sockets are behind the Hidden
+/// switch. A pair of what the small passives grant is named by its first line.
+fn shorten_cluster(rows: &mut [Row]) {
+    for row in rows.iter_mut() {
+        let second = |line: &String| line.strip_prefix(CLUSTER_GRANT).is_some_and(|rest| CLUSTER_SECOND.contains(&hashed(rest).as_str()));
+        if row.lines.first().is_some_and(|line| is_cluster_socket(line) || second(line)) {
+            row.hidden = true;
+            continue;
+        }
+        let Some(short) = row.lines.first().and_then(|line| cluster_short(line)) else { continue };
+        if row.lines.iter().all(|line| line.starts_with(CLUSTER_GRANT)) {
+            row.lines = vec![short];
+        } else {
+            row.lines[0] = short;
+        }
+    }
+}
+
+/// A map that holds a boss (a conqueror's citadel, an Elder guardian) gets a row for any boss of
+/// its family, off: the base view shows and asks it in place of the very boss.
+fn any_boss(rows: &mut Vec<Row>, filters: &mut Vec<zenith_core::matching::Filter>) {
+    let found = rows.iter().find_map(|row| {
+        let (stat, _) = filters.get(row.filter?)?.id.split_once('|')?;
+        let (family, name) = crate::check::MAP_BOSSES.iter().find(|(family, _)| *family == stat)?;
+        Some((row.clone(), *family, *name))
+    });
+    let Some((mut row, family, name)) = found else { return };
+    filters.push(zenith_core::matching::Filter { id: family.to_owned(), min: None, max: None, on: false, label: name.to_owned(), tier: None });
+    row.lines = vec![name.to_owned()];
+    row.id = Some(family.to_owned());
+    row.filter = Some(filters.len() - 1);
+    rows.push(row);
+}
+
+fn mark_variants(rows: &mut [Row], filters: &mut [Filter], mods: &[Mod], variants: &[String]) {
+    if variants.is_empty() {
+        return;
+    }
+    let plain = |t: &str| t.trim_start_matches(['~', '+']).to_owned();
+    let first = rows.len().saturating_sub(mods.len());
+    for (at, m) in (first..).zip(mods) {
+        let found = m.lines.iter().find_map(|line| variants.iter().find(|v| plain(v) == plain(&line.template)));
+        let Some(found) = found else { continue };
+        rows[at].variant = true;
+        rows[at].hidden = false;
+        if let Some(filter) = rows[at].filter.and_then(|index| filters.get_mut(index)) {
+            filter.on = !found.starts_with('~');
+        }
+    }
+}
+
 /// The defence and damage lines that a property row of the item already adds up: the local
 /// mods that feed it. A partner line of a hybrid (stun recovery, accuracy) goes with them.
 fn is_covered_line(template: &str, weapon: bool) -> bool {
@@ -275,7 +508,8 @@ fn is_covered_line(template: &str, weapon: bool) -> bool {
         return matches!(t, "#% increased Physical Damage" | "#% increased Attack Speed")
             || (t.starts_with("Adds # to # ") && ["Physical", "Fire", "Cold", "Lightning"].iter().any(|kind| t.ends_with(&format!("{kind} Damage"))));
     }
-    DEFENCES.iter().any(|d| t == format!("# to {d}") || t == format!("#% increased {d}") || t == format!("# to maximum {d}"))
+    // A shield's chance to block row covers its local block mod.
+    t == "#% increased Chance to Block" || DEFENCES.iter().any(|d| t == format!("# to {d}") || t == format!("#% increased {d}") || t == format!("# to maximum {d}"))
 }
 
 /// Marks the local mods that a total defence or damage row covers off and hidden: the row asks for
@@ -322,6 +556,32 @@ pub fn priced_as(mut view: View, way: Option<Way>) -> View {
         let stale = check.stale;
         apply(check, &Action::SetWay(way));
         check.stale = stale;
+    }
+    view
+}
+
+/// A view that would only say there is nothing to say: not an item, an item that is not priced,
+/// a stack with no price and no offer. The price-check key opens no panel for it.
+pub fn is_useless(view: &View) -> bool {
+    match view {
+        View::Message(message) => message == NOT_AN_ITEM,
+        View::Item(check) => {
+            let priceless = check.result.quote.as_ref().and_then(|quote| quote.each).is_none() && check.result.bulk.is_empty();
+            !check.result.loading && (check.plan == Plan::Nothing || (check.plan == Plan::Stack && priceless))
+        }
+        _ => false,
+    }
+}
+
+/// The first view of a check, shown before the price list is asked: an item that the list may
+/// price is waited for, not said to be unpriced. The price-check thread answers it.
+pub fn awaiting_quote(mut view: View) -> View {
+    if let View::Item(check) = &mut view
+        && check.plan == Plan::Nothing
+        && quote::may_be_stackable(&check.item)
+    {
+        check.result.problem = None;
+        check.result.loading = true;
     }
     view
 }
@@ -474,6 +734,7 @@ fn rows_of(mods: &[Mod], local: Local, stats: Option<&Stats>, filters: &[Filter]
                 corruption: false,
                 hidden: false,
                 implicit: false,
+                variant: false,
                 value: None,
                 range: None,
             }
@@ -503,6 +764,7 @@ fn rows_of(mods: &[Mod], local: Local, stats: Option<&Stats>, filters: &[Filter]
             corruption: false,
             hidden: false,
             implicit: false,
+            variant: false,
             value: total.map(|total| total.value),
             range: total.and_then(|total| total.range),
         });
@@ -540,6 +802,7 @@ fn rows_of(mods: &[Mod], local: Local, stats: Option<&Stats>, filters: &[Filter]
             corruption: m.corruption,
             hidden: false,
             implicit: is_implicit(&m.kind),
+            variant: false,
             value: matched.value,
             range: matched.range,
         });
@@ -1010,6 +1273,10 @@ pub fn report(view: &View, now: i64) -> String {
     }
     if check.searchable() {
         line(format!("options:  {}", options_line(check)));
+        if !check.candidates.is_empty() {
+            let pictured = check.candidate_icons.iter().filter(|icon| icon.is_some()).count();
+            line(format!("picker:   {} candidates, {pictured} with a picture", check.candidates.len()));
+        }
     }
     if let Some(quote) = &check.result.quote {
         for text in quote::report_lines(item, quote, now) {
@@ -1127,11 +1394,14 @@ fn demo_pack() -> Pack {
         ("fractured", "#% increased Movement Speed", "fractured.stat_demo_8"),
         ("explicit", "#% increased Armour (Local)", "explicit.stat_demo_9"),
         ("explicit", "+#% to Cold Resistance", "explicit.stat_demo_10"),
+        ("implicit", "Map contains Baran's Citadel", "implicit.stat_2563183002|1"),
+        ("implicit", "Map is occupied by The Purifier", "implicit.stat_3624393862|4"),
+        ("implicit", "Area is influenced by The Elder", "implicit.stat_1792283443|2"),
     ] {
         pack.stats.entry(group.into()).or_default().insert(text.into(), vec![id.into()]);
     }
     pack.uniques = vec![("Bloodboil Band".into(), "Prismatic Ring".into()), ("The Taming".into(), "Prismatic Ring".into()), ("Storm Cloud".into(), "Long Bow".into())];
-    for class in ["Body Armours", "Rings", "Bows", "Boots", "Viscera"] {
+    for class in ["Body Armours", "Rings", "Bows", "Boots", "Viscera", "Maps"] {
         if let Some(category) = zenith_data::category(class) {
             pack.categories.insert(class.into(), category.into());
         }

@@ -11,6 +11,8 @@ try {
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory $stage | Out-Null
     Copy-Item 'target\release\zenith.exe' $stage
+    # The data the program carries comes with its licences.
+    Copy-Item 'LICENSE', 'THIRD_PARTY_NOTICES' $stage
     vpk pack --packId Zenith --packVersion $version --packDir $stage --mainExe zenith.exe `
         --icon 'crates\app\assets\zenith.ico' --packTitle "Zenith Trade" --splashImage 'installer/splash.png' --outputDir 'target\releases'
     if ($LASTEXITCODE -ne 0) { throw 'vpk pack failed' }

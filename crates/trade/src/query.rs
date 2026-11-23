@@ -63,6 +63,8 @@ pub struct SearchOptions {
     pub identified: Option<bool>,
     /// Keep Foulborn listings only, or only those that are not; `None` for both.
     pub mutated: Option<bool>,
+    /// Keep vestigial listings only, or only those that are not; `None` for both.
+    pub vestigial: Option<bool>,
 }
 
 impl Default for SearchOptions {
@@ -77,6 +79,7 @@ impl Default for SearchOptions {
             split: None,
             identified: None,
             mutated: None,
+            vestigial: None,
         }
     }
 }
@@ -131,6 +134,34 @@ pub fn add_weapon_filters(request: &mut Value, search: &GearSearch<'_>) {
     }
     if let Some(filters) = request.pointer_mut("/query/filters").and_then(Value::as_object_mut) {
         add_group(filters, "weapon_filters", weapon);
+    }
+}
+
+/// The armour filters of a search: defences, chance to block, where the defence lies in the range
+/// of its base type.
+fn armour_filters(search: &GearSearch<'_>) -> Map<String, Value> {
+    let mut armour = Map::new();
+    add_range(&mut armour, "ar", search.armour_min, search.armour_max);
+    add_range(&mut armour, "ev", search.evasion_min, search.evasion_max);
+    add_range(
+        &mut armour,
+        "es",
+        search.energy_shield_min,
+        search.energy_shield_max,
+    );
+    add_range(&mut armour, "block", search.block_min, search.block_max);
+    add_range(&mut armour, "base_defence_percentile", search.base_percentile_min, None);
+    armour
+}
+
+/// Adds the armour filters of `search` to a request built without them, such as a unique's.
+pub fn add_armour_filters(request: &mut Value, search: &GearSearch<'_>) {
+    let armour = armour_filters(search);
+    if armour.is_empty() {
+        return;
+    }
+    if let Some(filters) = request.pointer_mut("/query/filters").and_then(Value::as_object_mut) {
+        add_group(filters, "armour_filters", armour);
     }
 }
 
@@ -211,6 +242,22 @@ pub struct GearSearch<'a> {
     pub evasion_max: Option<u32>,
     pub energy_shield_min: Option<u32>,
     pub energy_shield_max: Option<u32>,
+    /// A shield's chance to block, in percent.
+    pub block_min: Option<u32>,
+    pub block_max: Option<u32>,
+    /// The least percentile of the defence in the range of its base type.
+    pub base_percentile_min: Option<u32>,
+    /// A map's tier, exactly; and the least of what it adds, in percent.
+    pub map_tier: Option<u32>,
+    pub map_bonus_min: Option<u32>,
+    pub map_quantity_min: Option<u32>,
+    pub map_rarity_min: Option<u32>,
+    pub map_pack_size_min: Option<u32>,
+    /// The unique a Valdo map gives once completed.
+    pub map_reward: Option<&'a str>,
+    /// A blighted map: the discriminator (`blighted`, `uberblighted`) that makes `base` the id of
+    /// its area.
+    pub map_blight: Option<&'a str>,
     /// Physical damage per second.
     pub pdps_min: Option<f64>,
     pub pdps_max: Option<f64>,
@@ -265,14 +312,22 @@ pub fn gear_request(search: &GearSearch<'_>, opts: &SearchOptions) -> Value {
     misc.extend(misc_filters(opts));
 
     let mut armour = Map::new();
-    add_range(&mut armour, "ar", search.armour_min, search.armour_max);
-    add_range(&mut armour, "ev", search.evasion_min, search.evasion_max);
-    add_range(
-        &mut armour,
-        "es",
-        search.energy_shield_min,
-        search.energy_shield_max,
-    );
+    armour.extend(armour_filters(search));
+
+    let mut map = Map::new();
+    add_range(&mut map, "map_tier", search.map_tier, search.map_tier);
+    add_range(&mut map, "map_bonus", search.map_bonus_min, None);
+    add_range(&mut map, "map_iiq", search.map_quantity_min, None);
+    add_range(&mut map, "map_iir", search.map_rarity_min, None);
+    add_range(&mut map, "map_packsize", search.map_pack_size_min, None);
+    if let Some(reward) = search.map_reward {
+        map.insert("map_completion_reward".into(), json!({ "option": reward }));
+    }
+    match search.map_blight {
+        Some("blighted") => _ = map.insert("map_blighted".into(), json!({ "option": "true" })),
+        Some("uberblighted") => _ = map.insert("map_uberblighted".into(), json!({ "option": "true" })),
+        _ => {}
+    }
 
     let weapon = weapon_filters(search);
 
@@ -282,14 +337,17 @@ pub fn gear_request(search: &GearSearch<'_>, opts: &SearchOptions) -> Value {
     add_group(&mut filters, "misc_filters", misc);
     add_group(&mut filters, "armour_filters", armour);
     add_group(&mut filters, "weapon_filters", weapon);
+    add_group(&mut filters, "map_filters", map);
     add_group(&mut filters, "trade_filters", trade_filters(opts));
 
     let stats = stat_filters(search.stats);
 
     let mut query = Map::new();
     query.insert("status".into(), json!({ "option": opts.status }));
-    if let Some(base) = search.base {
-        query.insert("type".into(), json!(base));
+    match (search.base, search.map_blight) {
+        (Some(area), Some(disc)) => _ = query.insert("type".into(), json!({ "option": area, "discriminator": disc })),
+        (Some(base), None) => _ = query.insert("type".into(), json!(base)),
+        (None, _) => {}
     }
     query.insert("stats".into(), json!([{ "type": "and", "filters": stats }]));
     query.insert("filters".into(), Value::Object(filters));
@@ -338,6 +396,11 @@ fn stat_filters(stats: &[Stat]) -> Vec<Value> {
     stats
         .iter()
         .map(|(id, min, max)| {
+            // A stat of options, `implicit.stat_3624393862|4`: the option is the value.
+            if let Some((id, option)) = id.split_once('|') {
+                let option: Value = option.parse::<u64>().map_or_else(|_| json!(option), |n| json!(n));
+                return json!({ "id": id, "value": { "option": option }, "disabled": false });
+            }
             let mut value = Map::new();
             if let Some(min) = min {
                 value.insert("min".into(), number(*min));
@@ -378,6 +441,7 @@ fn misc_filters(opts: &SearchOptions) -> Map<String, Value> {
         ("split", opts.split),
         ("identified", opts.identified),
         ("mutated", opts.mutated),
+        ("vestigial", opts.vestigial),
     ] {
         if let Some(value) = value {
             misc.insert(id.into(), yes_or_no(value));

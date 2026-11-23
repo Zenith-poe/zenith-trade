@@ -10,10 +10,11 @@
 //! `rolls` gives the values its minimum is set to in one gesture.
 
 use crate::quote::Quote;
-use zenith_core::matching::{ARMOUR, ATTACKS_PER_SECOND, CRITICAL_CHANCE, ELEMENTAL_DPS, ENERGY_SHIELD, EVASION, PHYSICAL_DPS, TOTAL_DPS};
+use zenith_core::matching::{MAP_BONUS, MAP_MODIFIERS, MAP_PACK_SIZE, MAP_QUANTITY, MAP_RARITY, map_pseudo};
+use zenith_core::matching::{ARMOUR, BASE_PERCENTILE, ATTACKS_PER_SECOND, BLOCK, CRITICAL_CHANCE, ELEMENTAL_DPS, ENERGY_SHIELD, EVASION, PHYSICAL_DPS, TOTAL_DPS};
 use zenith_core::{Estimate, Filter, Influence, Item, Rarity, gem_level, open_affixes, parse_mods, parse_properties};
 use zenith_trade::client::{BASE_URL, Budget};
-use zenith_trade::{Currency, GearSearch, Listed, Listing, SearchOptions, Status, gear_request, gem_request, unique_request, add_weapon_filters};
+use zenith_trade::{Currency, GearSearch, Listed, Listing, SearchOptions, Status, gear_request, gem_request, unique_request, add_armour_filters, add_weapon_filters};
 
 /// How a row stands in the search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct Row {
     /// A mod the base, or what was done to it, gives the item: the game writes those apart from
     /// the others.
     pub implicit: bool,
+    /// A mod of the pool a unique draws from (Zana's Ingenuity): never hidden.
+    pub variant: bool,
     /// The value of a mod as its stat counts it, and the least and the most it could have been
     /// when the item gives the range it was rolled in: see `zenith_core::Matched`.
     pub value: Option<f64>,
@@ -98,6 +101,8 @@ pub struct Options {
     pub open_suffix: bool,
     /// Magic listings only (a magic item starts with it); off, any rarity but unique.
     pub magic: bool,
+    /// A map asks the bulk exchange for offers in place of searching listings.
+    pub bulk: bool,
     pub status: Status,
     /// `None`: any currency.
     pub currency: Option<Currency>,
@@ -110,7 +115,8 @@ impl Options {
     /// like the item, and nothing else.
     pub fn of(item: &Item) -> Self {
         Self {
-            base: false,
+            // A map asks for its base, `Map (Tier 16)`, and a cluster jewel for its size.
+            base: (item.class == "Maps" && item.rarity != Rarity::Unique) || is_cluster(item),
             // A gem asks for the level and the quality it has.
             item_level: if item.rarity == Rarity::Gem { gem_level(item) } else { None },
             // A gem and a unique ask for the quality they have.
@@ -125,7 +131,9 @@ impl Options {
             foulborn: is_foulborn(item).then_some(true),
             open_prefix: false,
             open_suffix: false,
-            magic: item.rarity == Rarity::Magic,
+            // An unidentified item shows no mods: it is worth its base, whatever its rarity.
+            magic: item.rarity == Rarity::Magic && item.identified,
+            bulk: starts_in_bulk(item),
             status: Status::Securable,
             currency: Some(Currency::ChaosDivine),
             listed: Some(Listed::Days3),
@@ -227,12 +235,16 @@ pub struct Check {
     /// An unidentified unique: the uniques the data pack knows on its base, to choose from, and
     /// the one chosen. Once one is chosen the search is the one of that unique by its name.
     pub candidates: Vec<String>,
+    /// The picture address of each candidate, in the same order; filled where the price list meets the check.
+    pub candidate_icons: Vec<Option<String>>,
     pub unique: Option<String>,
     /// The Hidden switch is on: the rows a display rule hides show again, dimmed. Not saved.
     pub reveal: bool,
     /// The menu of the candidates is shown open whatever the panel's own state says: the
     /// `--view` pictures of it.
     pub candidates_open: bool,
+    /// The settings let a map be priced on the bulk exchange: without it there is no Bulk chip.
+    pub bulk_allowed: bool,
     /// The filters as the item was read: what pricing it as an item starts from.
     defaults: Vec<Filter>,
 }
@@ -251,9 +263,11 @@ impl Check {
             result: Outcome { loading: !matches!(plan, Plan::Nothing | Plan::Stack), ..Outcome::default() },
             links: parse_properties(&item).links,
             candidates: Vec::new(),
+            candidate_icons: Vec::new(),
             unique: None,
             reveal: false,
             candidates_open: false,
+            bulk_allowed: false,
             item,
             rows,
             filters,
@@ -280,7 +294,8 @@ impl Check {
             if let Plan::Gear { base: Some(_), .. } = &check.plan {
                 check.options.base = true;
             }
-            if matches!(check.plan, Plan::Gear { .. }) {
+            // A cluster jewel's level matters only by its steps: offered, not asked.
+            if matches!(check.plan, Plan::Gear { .. }) && !is_cluster(&check.item) {
                 check.options.item_level = check.item.item_level;
             }
         }
@@ -295,7 +310,22 @@ impl Check {
             return;
         }
         self.unique = (names.len() == 1).then(|| names[0].clone());
+        // Several: nothing is searched before the player picks one, from the list open at once.
+        if names.len() > 1 {
+            self.candidates_open = true;
+            self.result.loading = false;
+        }
         self.candidates = names;
+    }
+
+    /// Gives each candidate its picture, by name; one with none keeps a placeholder.
+    pub fn set_candidate_icons(&mut self, icons: &std::collections::HashMap<String, String>) {
+        self.candidate_icons = self.candidates.iter().map(|name| icons.get(name).cloned()).collect();
+    }
+
+    /// Whether the picker is up: an unidentified unique with several candidates and no pick yet.
+    pub fn picking(&self) -> bool {
+        self.candidates_open && self.unique.is_none() && !self.candidates.is_empty()
     }
 
     /// Whether the mod behind a filter has decimals: its roll range or its value has a fractional
@@ -303,7 +333,11 @@ impl Check {
     /// Whether a display rule keeps the row off the panel: a hidden row, or any row but a
     /// fractured mod on the base view.
     pub fn hides(&self, row: &Row) -> bool {
-        row.hidden || (self.way == Way::Base && !(self.item.fractured && row.fractured))
+        let id = row.filter.and_then(|index| self.filters.get(index)).map_or("", |filter| filter.id.as_str());
+        // A map shows its very boss on the item view, and any of its family on the base view.
+        row.hidden
+            || (self.way == Way::Item && is_any_boss(id))
+            || (self.way == Way::Base && !kept_on_base(id) && !(self.item.fractured && row.fractured))
     }
 
     /// How many rows the display rules hide.
@@ -431,15 +465,31 @@ impl Check {
         self.filter_of(row).filter(|filter| filter.on).and_then(|filter| filter.min)
     }
 
+    /// Whether a filter started from its most, not its least: a stat whose less is the better,
+    /// as more damage taken.
+    pub fn upper(&self, index: usize) -> bool {
+        self.defaults.get(index).is_some_and(|filter| filter.min.is_none() && filter.max.is_some())
+    }
+
     /// Whether a filter can be asked for a negative value: it started with one, or has one now.
     /// Everything else is only ever asked for from zero up.
     pub fn signed(&self, index: usize) -> bool {
         let negative = |bound: Option<f64>| bound.is_some_and(|bound| bound < 0.0);
-        negative(self.defaults.get(index).and_then(|filter| filter.min))
+        negative(self.defaults.get(index).and_then(|filter| filter.min.or(filter.max)))
             || self.filters.get(index).is_some_and(|filter| negative(filter.min) || negative(filter.max))
     }
 
     /// A search can be sent for it.
+    /// A map searched on the site, by its properties or on the bulk exchange.
+    pub fn is_map(&self) -> bool {
+        matches!(&self.plan, Plan::Gear { category, .. } if category == MAP_CATEGORY)
+    }
+
+    /// Priced on the bulk exchange: offers, not listings.
+    pub fn in_bulk(&self) -> bool {
+        self.is_map() && self.options.bulk
+    }
+
     pub fn searchable(&self) -> bool {
         matches!(self.plan, Plan::Unique | Plan::Gear { .. } | Plan::Exact { .. } | Plan::Gem { .. })
     }
@@ -484,7 +534,7 @@ impl Check {
                 });
             }
             let numbered = [
-                (ItemOption::ItemLevel, "ilvl", self.item.item_level, chosen.item_level),
+                (ItemOption::ItemLevel, "ilvl", self.item.item_level.map(|level| if is_cluster(&self.item) { cluster_level(level) } else { level }), chosen.item_level),
                 (ItemOption::Quality, "Quality", self.item.quality, chosen.quality),
             ];
             for (option, label, has, asked) in numbered {
@@ -534,6 +584,9 @@ impl Check {
         if self.item.rarity == Rarity::Magic && matches!(self.plan, Plan::Gear { .. }) {
             chips.push(OptionChip { option: ItemOption::Magic, label: "Magic only".into(), number: None, on: chosen.magic, click: Action::ToggleMagic });
         }
+        if self.is_map() && self.bulk_allowed {
+            chips.push(OptionChip { option: ItemOption::Bulk, label: "Bulk".into(), number: None, on: chosen.bulk, click: Action::ToggleBulk });
+        }
         if is_foulborn(&self.item) && self.plan == Plan::Unique {
             chips.push(OptionChip { option: ItemOption::Foulborn, label: "Foulborn".into(), number: None, on: chosen.foulborn.is_some(), click: Action::ToggleFoulborn });
         }
@@ -544,7 +597,7 @@ impl Check {
             chips.push(OptionChip { option: ItemOption::Any, label, number: None, on: self.any_count().is_some(), click: Action::ToggleAny });
         }
         // A rare with a free slot can be asked to have it still: off, as it asks for more than the item is.
-        if matches!(self.plan, Plan::Gear { .. })
+        if matches!(&self.plan, Plan::Gear { category, .. } if category != MAP_CATEGORY)
             && let Some((prefixes, suffixes)) = open_affixes(&self.item, &parse_mods(&self.item))
         {
             if prefixes > 0 {
@@ -614,12 +667,17 @@ impl Check {
 pub fn way_set(check: &Check, way: Way) -> (Vec<Filter>, Options) {
     let Options { status, currency, listed, .. } = check.options;
     let options = Options { status, currency, listed, ..Options::of(&check.item) };
+    let options = Options { bulk: options.bulk && check.bulk_allowed, ..options };
     let mut filters = check.defaults.clone();
     if way == Way::Item {
         return (filters, options);
     }
     for filter in &mut filters {
         filter.on = false;
+    }
+    // A map keeps any boss of its family, and its influence.
+    for filter in filters.iter_mut().filter(|filter| kept_on_base(&filter.id)) {
+        filter.on = true;
     }
     for row in check.rows.iter().filter(|row| row.fractured) {
         if let Some(filter) = row.filter.and_then(|index| filters.get_mut(index)) {
@@ -659,6 +717,8 @@ pub enum ItemOption {
     Foulborn,
     /// A magic item asks for magic listings only.
     Magic,
+    /// A map is priced on the bulk exchange.
+    Bulk,
     /// A free prefix, a free suffix.
     OpenPrefix,
     OpenSuffix,
@@ -876,6 +936,7 @@ pub enum Action {
     PickUnique(Option<usize>),
     ToggleFoulborn,
     ToggleMagic,
+    ToggleBulk,
     ToggleOpenPrefix,
     ToggleOpenSuffix,
     CycleCorrupted,
@@ -996,6 +1057,7 @@ pub fn apply(check: &mut Check, action: &Action) -> Effect {
             }
         }
         Action::PickUnique(Some(index)) => {
+            check.candidates_open = false;
             if let Some(name) = check.candidates.get(index).filter(|name| check.unique.as_ref() != Some(name)) {
                 check.unique = Some(name.clone());
                 check.stale = true;
@@ -1007,6 +1069,7 @@ pub fn apply(check: &mut Check, action: &Action) -> Effect {
         Action::SetLinks(links) => check.options.links = links,
         Action::ToggleFoulborn => check.options.foulborn = if check.options.foulborn.is_some() { None } else { Some(true) },
         Action::ToggleMagic => check.options.magic = !check.options.magic,
+        Action::ToggleBulk => check.options.bulk = !check.options.bulk,
         Action::ToggleOpenPrefix => check.options.open_prefix = !check.options.open_prefix,
         Action::ToggleOpenSuffix => check.options.open_suffix = !check.options.open_suffix,
         Action::ToggleInfluence(influence) => check.options.influences ^= influence.bit(),
@@ -1159,6 +1222,12 @@ pub fn again(check: &Check, budget: Budget) -> Again {
 pub fn act(check: &mut Check, action: &Action, budget: Budget) -> Effect {
     match *action {
         Action::SearchAgain if again(check, budget) != Again::Ready => Effect::None,
+        // A unique picked for an unidentified one is searched at once.
+        Action::PickUnique(Some(index)) => {
+            let picked = check.candidates.get(index).is_some_and(|name| check.unique.as_ref() != Some(name));
+            apply(check, action);
+            if picked && again(check, budget) == Again::Ready { apply(check, &Action::SearchAgain) } else { Effect::None }
+        }
         Action::SetWay(way) => {
             let chosen = check.has_ways() && check.way != way;
             apply(check, action);
@@ -1190,6 +1259,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
         split: chosen.split,
         identified: chosen.identified,
         mutated: chosen.foulborn,
+        vestigial: check.item.vestigial.then_some(true),
     };
     // The unique chosen for an unidentified one: the search of that unique, still unidentified.
     if let (Some(name), Plan::Gear { .. }) = (&check.unique, &check.plan) {
@@ -1203,6 +1273,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
             let stats: Vec<_> = check.filters.iter().filter(|filter| filter.on && !is_property(&filter.id)).map(|filter| (filter.id.clone(), filter.min, filter.max)).collect();
             let mut request = unique_request(search_name(name), &check.item.base, chosen.links, &stats, &options);
             let mut weapon = GearSearch::default();
+            let whole = |bound: Option<f64>| bound.map(|bound| bound.max(0.0) as u32);
             for filter in check.filters.iter().filter(|filter| filter.on) {
                 match filter.id.as_str() {
                     PHYSICAL_DPS => (weapon.pdps_min, weapon.pdps_max) = (filter.min, filter.max),
@@ -1210,13 +1281,19 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
                     TOTAL_DPS => (weapon.dps_min, weapon.dps_max) = (filter.min, filter.max),
                     CRITICAL_CHANCE => (weapon.crit_min, weapon.crit_max) = (filter.min, filter.max),
                     ATTACKS_PER_SECOND => (weapon.aps_min, weapon.aps_max) = (filter.min, filter.max),
+                    BASE_PERCENTILE => weapon.base_percentile_min = whole(filter.min),
                     _ => {}
                 }
             }
             add_weapon_filters(&mut request, &weapon);
+            add_armour_filters(&mut request, &weapon);
             zenith_trade::add_quality(&mut request, chosen.quality);
+            if check.item.class == "Maps" {
+                as_unique_map(&mut request, search_name(name), &check.item.base);
+            }
             Some(grouped(check, request))
         }
+        Plan::Gear { category, .. } if category == MAP_CATEGORY && chosen.bulk => Some(serde_json::json!({ BULK: crate::quote::name_of(&check.item) })),
         Plan::Gear { category, base } | Plan::Exact { category, base } => {
             let whole = |bound: Option<f64>| bound.map(|bound| bound.max(0.0) as u32);
             let mut stats = Vec::new();
@@ -1231,6 +1308,10 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
                 quality_max: zenith_trade::jewellery_quality_max(category, chosen.quality),
                 links_min: chosen.links,
                 fractured: chosen.fractured,
+                // A map is searched at its tier, whatever else is asked.
+                map_tier: if category == MAP_CATEGORY { parse_properties(&check.item).map_tier } else { None },
+                map_reward: if category == MAP_CATEGORY { map_reward(&check.item) } else { None },
+                map_blight: if category == MAP_CATEGORY { blight_of(&check.item.base).map(|(disc, _)| disc) } else { None },
                 ..GearSearch::default()
             };
             for filter in check.filters.iter().filter(|filter| filter.on) {
@@ -1240,11 +1321,22 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
                     ENERGY_SHIELD => {
                         (search.energy_shield_min, search.energy_shield_max) = (whole(filter.min), whole(filter.max));
                     }
+                    BLOCK => (search.block_min, search.block_max) = (whole(filter.min), whole(filter.max)),
+                    BASE_PERCENTILE => search.base_percentile_min = whole(filter.min),
+                    MAP_BONUS => search.map_bonus_min = whole(filter.min),
+                    MAP_QUANTITY => search.map_quantity_min = whole(filter.min),
+                    MAP_RARITY => search.map_rarity_min = whole(filter.min),
+                    MAP_PACK_SIZE => search.map_pack_size_min = whole(filter.min),
                     PHYSICAL_DPS => (search.pdps_min, search.pdps_max) = (filter.min, filter.max),
                     ELEMENTAL_DPS => (search.edps_min, search.edps_max) = (filter.min, filter.max),
                     TOTAL_DPS => (search.dps_min, search.dps_max) = (filter.min, filter.max),
                     CRITICAL_CHANCE => (search.crit_min, search.crit_max) = (filter.min, filter.max),
                     ATTACKS_PER_SECOND => (search.aps_min, search.aps_max) = (filter.min, filter.max),
+                    id if map_pseudo(id).is_some() => {
+                        // The number of affixes is asked exactly.
+                        let max = if id == MAP_MODIFIERS { filter.min } else { filter.max };
+                        stats.push((map_pseudo(id).unwrap_or_default().to_owned(), filter.min, max));
+                    }
                     id if !is_property(id) => stats.push((filter.id.clone(), filter.min, filter.max)),
                     _ => {}
                 }
@@ -1286,8 +1378,76 @@ fn grouped(check: &Check, mut request: serde_json::Value) -> serde_json::Value {
             }
         }
     }
+    // A Valdo map is worth more when a death does not send its players to the Void.
+    if check.is_map() && map_reward(&check.item).is_some() && !check.item.sections.iter().flatten().any(|line| line.contains("sent to the Void")) {
+        not.push(VOID_DEATH.to_owned());
+    }
     zenith_trade::regroup_stats(&mut request, &not, check.any_count(), &[OPEN_PREFIX, OPEN_SUFFIX]);
+    any_boss_group(&mut request);
     request
+}
+
+/// The site has no "any" option for a stat of options: any boss of a family is asked as a count
+/// group, one of its four bosses.
+fn any_boss_group(request: &mut serde_json::Value) {
+    let Some(groups) = request.pointer_mut("/query/stats").and_then(serde_json::Value::as_array_mut) else { return };
+    let mut asked = Vec::new();
+    for group in groups.iter_mut() {
+        if let Some(filters) = group.get_mut("filters").and_then(serde_json::Value::as_array_mut) {
+            filters.retain(|filter| match filter.get("id").and_then(serde_json::Value::as_str) {
+                // The boss itself has its option; any boss has none.
+                Some(id) if is_any_boss(id) && filter.pointer("/value/option").is_none() => {
+                    asked.push(id.to_owned());
+                    false
+                }
+                _ => true,
+            });
+        }
+    }
+    for id in asked {
+        let bosses: Vec<_> = (1..=4).map(|option| serde_json::json!({ "id": id, "value": { "option": option }, "disabled": false })).collect();
+        groups.push(serde_json::json!({ "type": "count", "value": { "min": 1 }, "filters": bosses }));
+    }
+}
+
+/// "Players who Die in area are sent to the Void", which a Valdo map can have.
+const VOID_DEATH: &str = "explicit.stat_1095765106";
+
+/// The trade category of maps.
+pub const MAP_CATEGORY: &str = "map";
+
+/// The key of the request of a check priced on the bulk exchange: `{"bulk": "Nightmare Map"}`,
+/// the name the exchange is asked for. No search request has it.
+const BULK: &str = "bulk";
+
+/// The bosses a map can hold, by family: the trade stat of the family, whose option is the boss,
+/// and what the panel calls any of them.
+pub const MAP_BOSSES: [(&str, &str); 2] = [("implicit.stat_2563183002", "Any conqueror"), ("implicit.stat_3624393862", "Any Elder guardian")];
+
+/// The influence of a map of the Shaper's or the Elder's guardians: kept on the base view, as
+/// the boss family is.
+const MAP_INFLUENCE: &str = "implicit.stat_1792283443|";
+
+/// Whether a stat asks for any boss of a family.
+pub fn is_any_boss(id: &str) -> bool {
+    MAP_BOSSES.iter().any(|(family, _)| *family == id)
+}
+
+/// What the base view of a map keeps on: any boss of its family, and its influence.
+fn kept_on_base(id: &str) -> bool {
+    is_any_boss(id) || id.starts_with(MAP_INFLUENCE)
+}
+
+/// The name a request asks the bulk exchange for, when it is a bulk one.
+pub fn bulk_name(request: &serde_json::Value) -> Option<&str> {
+    request.get(BULK)?.as_str()
+}
+
+/// A map that is priced on the bulk exchange from the start, as the players trade it: all but an
+/// identified rare one that is not blighted, whose numbers are worth searching.
+fn starts_in_bulk(item: &Item) -> bool {
+    let blighted = item.base.starts_with("Blighted ") || item.base.starts_with("Blight-ravaged ");
+    item.class == "Maps" && item.rarity != Rarity::Unique && (item.rarity != Rarity::Rare || !item.identified || blighted)
 }
 
 /// The pseudo stats of the trade site for the free slots of a rare.
@@ -1309,6 +1469,45 @@ fn is_foulborn(item: &Item) -> bool {
 /// A unique changed by the Foulborn mechanic is copied as `Foulborn <name>`; the trade site
 /// knows it under the plain name (checked: the plain name with the `mutated` filter finds
 /// Foulborn copies), so the Foulborn copies are told apart by that filter, not by the name.
+/// A unique map as the site lists it: its name and the type "Map", both told apart as maps; a
+/// Valdo map has a type of its own.
+fn as_unique_map(request: &mut serde_json::Value, name: &str, base: &str) {
+    let Some(query) = request.get_mut("query").and_then(serde_json::Value::as_object_mut) else { return };
+    if base.ends_with("Valdo Map") {
+        query.insert("type".into(), serde_json::json!("Valdo Map"));
+    } else {
+        query.insert("name".into(), serde_json::json!({ "option": name, "discriminator": "map" }));
+        query.insert("type".into(), serde_json::json!({ "option": "Map", "discriminator": "map" }));
+    }
+}
+
+/// A blighted map's discriminator on the site and its area: `Blight-ravaged Arcade Map` is
+/// `("uberblighted", "Arcade")`.
+pub fn blight_of(base: &str) -> Option<(&'static str, &str)> {
+    let (disc, rest) = match (base.strip_prefix("Blighted "), base.strip_prefix("Blight-ravaged ")) {
+        (Some(rest), _) => ("blighted", rest),
+        (_, Some(rest)) => ("uberblighted", rest),
+        _ => return None,
+    };
+    Some((disc, rest.strip_suffix(" Map")?))
+}
+
+/// A cluster jewel that is not a unique: it is searched by its size and its passives.
+fn is_cluster(item: &Item) -> bool {
+    item.rarity != Rarity::Unique && item.base.ends_with("Cluster Jewel")
+}
+
+/// The item level a cluster jewel is asked from: the step it is at, as the notables it can have
+/// change at 1, 50, 68, 75 and 84.
+fn cluster_level(level: u32) -> u32 {
+    [84, 75, 68, 50, 1].into_iter().find(|step| level >= *step).unwrap_or(1)
+}
+
+/// The unique a Valdo map gives once completed: its line `Reward: Foil <unique>`.
+fn map_reward(item: &Item) -> Option<&str> {
+    item.sections.iter().flatten().find_map(|line| line.strip_prefix("Reward: Foil ")).map(str::trim)
+}
+
 pub fn search_name(name: &str) -> &str {
     name.strip_prefix("Foulborn ").unwrap_or(name)
 }

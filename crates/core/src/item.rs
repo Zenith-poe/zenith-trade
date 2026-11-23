@@ -123,6 +123,9 @@ pub struct Item {
     pub stack: Option<(u32, u32)>,
     /// Every section's lines as copied, the first section included.
     pub sections: Vec<Vec<String>>,
+    /// A vestigial item: its base is named `Vestigial Ursine Pelt`, and it has a vestigial
+    /// implicit. The site lists it under its plain base, with a filter of its own.
+    pub vestigial: bool,
 }
 
 /// The level of a gem: the first `Level:` line, which is the gem itself (the requirements, whose
@@ -165,8 +168,17 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
         Some(second) => (Some(first.to_string()), second),
         None => (None, first),
     };
+    // An item with quality and no name of its own (normal, or unidentified) is called
+    // `Superior Jewelled Foil`: no base starts with that word.
+    let base = if name.is_none() { base.strip_prefix("Superior ").unwrap_or(base) } else { base };
     // A synthesised item is also named so: `Synthesised Vaal Regalia`.
     let (base, synthesised_name) = match base.strip_prefix("Synthesised ") {
+        Some(rest) => (rest, true),
+        None => (base, false),
+    };
+    // Either order: `Synthesised Superior …` too.
+    let base = if name.is_none() { base.strip_prefix("Superior ").unwrap_or(base) } else { base };
+    let (base, vestigial) = match base.strip_prefix("Vestigial ") {
         Some(rest) => (rest, true),
         None => (base, false),
     };
@@ -191,7 +203,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
             corrupted = true;
         } else if line == "Fractured Item" {
             fractured = true;
-        } else if line == "Unidentified" {
+        } else if line == "Unidentified" || line.starts_with("Unidentified (Tier ") {
             identified = false;
         } else if line == "Mirrored" {
             mirrored = true;
@@ -224,6 +236,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
         split,
         stack,
         sections,
+        vestigial,
     })
 }
 

@@ -191,6 +191,11 @@ impl Editor {
         (self.caret != self.anchor).then(|| (self.caret.min(self.anchor), self.caret.max(self.anchor)))
     }
 
+    /// The text selected, for the clipboard; `None` when nothing is.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|(start, end)| &self.text[start..end])
+    }
+
     /// What the field holds now.
     pub fn typed(&self) -> Typed {
         read(&self.text)
@@ -261,6 +266,15 @@ pub fn shown(check: &Check, target: Target) -> bool {
     }
 }
 
+/// Whether a searched row has number fields: a property always, a mod when it has a number. A mod
+/// that is there or not ("Unaffected by Shocked Ground") is asked for as it is, and its text takes
+/// the room of the fields; so is one of the choices of a stat (an id with `|`), whatever number
+/// its text has.
+pub fn has_fields(check: &Check, row: &crate::check::Row) -> bool {
+    let choice = row.filter.and_then(|filter| check.filters.get(filter)).is_some_and(|filter| filter.id.contains('|'));
+    row.kind.is_none() || (!choice && row.lines.iter().any(|line| line.chars().any(|c| c.is_ascii_digit())))
+}
+
 /// The fields the panel shows, in the order Tab goes through them: the numbers of the chips that
 /// are on, then the rows that are searched as the panel lists them, the minimum then the maximum.
 pub fn order(check: &Check) -> Vec<Target> {
@@ -268,7 +282,7 @@ pub fn order(check: &Check) -> Vec<Target> {
     let of_rows = check
         .rows
         .iter()
-        .filter(|row| check.leads(row))
+        .filter(|row| check.leads(row) && has_fields(check, row))
         .filter_map(|row| row.filter)
         .filter(|filter| check.filters.get(*filter).is_some_and(|filter| filter.on))
         .flat_map(|filter| [Target::min(filter), Target::max(filter)]);
@@ -337,6 +351,11 @@ impl Fields {
     /// No field has the caret and nothing is remembered.
     pub const fn new() -> Self {
         Self { active: None, odd: Vec::new(), turned: 0.0, turned_over: None }
+    }
+
+    /// The text selected in the field being typed in, for the clipboard.
+    pub fn selected_text(&self) -> Option<String> {
+        self.active.as_ref().and_then(Editor::selected_text).map(str::to_owned)
     }
 
     /// The field being typed in.

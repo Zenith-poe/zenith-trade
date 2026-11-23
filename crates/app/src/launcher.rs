@@ -8,7 +8,7 @@ use eframe::egui::{Rect, pos2, vec2};
 /// What an entry of the quick menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// Replaces the menu with the saved searches.
+    /// Opens the saved searches under the menu, or closes them.
     Searches,
     /// Opens the Settings window, on this page (the one it was last on when none is named).
     Settings(Option<&'static str>),

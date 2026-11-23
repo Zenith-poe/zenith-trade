@@ -62,6 +62,67 @@ pub fn get_url(ctx: &egui::Context, key: &str, url: &str) -> Option<TextureId> {
     get_with(ctx, key, Some(url))
 }
 
+/// Where poe.ninja lists the pictures of the uniques, by overview type.
+const UNIQUE_SOURCE: &str = "https://poe.ninja/poe1/api/economy/stash/current/item/overview";
+/// A cached map of pictures is fetched again after this long.
+const UNIQUE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// The poe.ninja overview that lists the uniques of an item class.
+pub fn unique_type(class: &str) -> Option<&'static str> {
+    Some(match class {
+        "Rings" | "Amulets" | "Belts" => "UniqueAccessory",
+        "Helmets" | "Body Armours" | "Gloves" | "Boots" | "Shields" | "Quivers" => "UniqueArmour",
+        "Jewels" | "Abyss Jewels" => "UniqueJewel",
+        "Life Flasks" | "Mana Flasks" | "Hybrid Flasks" | "Utility Flasks" => "UniqueFlask",
+        "Maps" => "UniqueMap",
+        "Bows" | "Claws" | "Daggers" | "Rune Daggers" | "Wands" | "Sceptres" | "Staves" | "Warstaves" | "One Hand Swords" | "Thrusting One Hand Swords" | "Two Hand Swords"
+        | "One Hand Axes" | "Two Hand Axes" | "One Hand Maces" | "Two Hand Maces" | "Fishing Rods" => "UniqueWeapon",
+        _ => return None,
+    })
+}
+
+/// The picture address of each name in a per-type overview (`{"lines": [{"name", "icon"}]}`): the
+/// first one a name has.
+pub fn parse_unique_icons(body: &str) -> std::collections::HashMap<String, String> {
+    let mut icons = std::collections::HashMap::new();
+    let value: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    for line in value["lines"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(icon)) = (line["name"].as_str(), line["icon"].as_str())
+            && !name.is_empty()
+            && !icon.is_empty()
+        {
+            icons.entry(name.to_owned()).or_insert_with(|| icon.to_owned());
+        }
+    }
+    icons
+}
+
+/// The pictures of the uniques of one overview type, read from the cache file in `dir` when it is
+/// under a day old, else fetched (and the file written). Empty when it can be neither.
+pub fn unique_icons(dir: &Path, league: &str, kind: &str, user_agent: &str) -> std::collections::HashMap<String, String> {
+    let safe: String = league.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let file = dir.join(format!("unique-icons-{kind}-{safe}.json"));
+    let fresh = std::fs::metadata(&file).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age < UNIQUE_MAX_AGE);
+    if fresh && let Some(map) = std::fs::read_to_string(&file).ok().and_then(|text| serde_json::from_str(&text).ok()) {
+        return map;
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .user_agent(user_agent)
+        .max_redirects(0)
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .into();
+    let body = agent.get(UNIQUE_SOURCE).query("league", league).query("type", kind).call().ok().and_then(|mut response| response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().ok());
+    let map = body.map(|body| parse_unique_icons(&body)).unwrap_or_default();
+    if !map.is_empty() {
+        let _ = std::fs::create_dir_all(dir);
+        if let Ok(text) = serde_json::to_string(&map) {
+            let _ = std::fs::write(&file, text);
+        }
+    }
+    map
+}
+
 /// The wiki file of an influence's item symbol (or of the Breach logo, for `Breach`), by the label
 /// the panel gives it.
 pub fn symbol_file(label: &str) -> Option<&'static str> {
@@ -212,11 +273,13 @@ fn download_from(key: &str, url: Option<&str>) -> Result<ColorImage, String> {
 }
 
 /// The part of an image that makes a square symbol. The Breach logo is a wide banner: only its
-/// hand and violet flame, centred on a square, read at pill size.
+/// hand and violet flame, centred on a square, read at pill size. Any other image that is not
+/// square, as a belt or a two-handed weapon, is centred on a clear square, so that it keeps its
+/// shape where icons are drawn square.
 fn fit(key: &str, image: ColorImage) -> ColorImage {
     let [width, height] = image.size;
     if key != "wiki-breach" || width < 420 || height < 275 {
-        return image;
+        return squared(image);
     }
     // The hand and its flame, in the 662 × 375 logo, scaled if the file is another size.
     let scale = width as f32 / 662.0;
@@ -228,6 +291,22 @@ fn fit(key: &str, image: ColorImage) -> ColorImage {
         for x in 0..w {
             out.pixels[y * side + left + x] = image.pixels[y * width + x0 + x];
         }
+    }
+    out
+}
+
+/// `image` centred on a clear square as wide as its longer side.
+fn squared(image: ColorImage) -> ColorImage {
+    let [width, height] = image.size;
+    if width == height {
+        return image;
+    }
+    let side = width.max(height);
+    let (left, top) = ((side - width) / 2, (side - height) / 2);
+    let mut out = ColorImage::new([side, side], vec![egui::Color32::TRANSPARENT; side * side]);
+    for y in 0..height {
+        let row = (top + y) * side + left;
+        out.pixels[row..row + width].copy_from_slice(&image.pixels[y * width..(y + 1) * width]);
     }
     out
 }

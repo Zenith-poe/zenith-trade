@@ -891,7 +891,7 @@ struct Touch {
     anchors: Vec<Anchor>,
     tracks: Vec<Track>,
     /// What the pointer reads when it rests on a mark: its rectangle and its sentence.
-    tips: Vec<(Rect, &'static str)>,
+    tips: Vec<(Rect, String)>,
 }
 
 impl Touch {
@@ -927,7 +927,9 @@ fn lay(
     let pen = Pen { ctx, p, o: origin.to_vec2() + vec2(hair, hair), hair, ppp };
     let frame = Frame { left: 16.0, right: WIDTH - 2.0 * hair - 16.0 };
     let fields = face.fields;
-    let menu_chip = face.menu.or_else(|| view.check().filter(|check| check.candidates_open).map(|_| Chip::Unique));
+    // An unidentified unique waiting for its pick shows the picker, not a menu of names.
+    let picking = view.check().is_some_and(picking);
+    let menu_chip = face.menu.or_else(|| view.check().filter(|check| check.candidates_open && !picking).map(|_| Chip::Unique));
     let mut touch = Touch {
         // Nor while a slider is held: the pointer is that slider's, wherever it goes.
         pointer: pointer.filter(|_| menu_chip.is_none() && face.drag.is_none()),
@@ -942,20 +944,40 @@ fn lay(
     };
 
     // The plate's height is known only once the rows are laid out: reserve its slots.
-    let slots = p.map(|p| (p.add(Shape::Noop), p.add(Shape::Noop)));
+    let slots = p.map(|p| (p.add(Shape::Noop), p.add(Shape::Noop), p.add(Shape::Noop), p.add(Shape::Noop)));
+    // The quick menu with its saved searches open: two plates, the gap between them clear.
+    let mut split = None;
 
     let mut y = match view {
         View::Message(text) => sentence(&pen, &frame, text, 12.0) + 2.0,
         View::Maps(maps) => map_body(&pen, &frame, maps, &mut touch),
-        View::Launcher => launcher_body(&pen, &frame, &mut touch),
-        View::Searches(titles) => searches_body(&pen, &frame, titles, &mut touch),
+        View::Launcher => launcher_body(&pen, &frame, false, &mut touch),
+        View::Searches(titles) => {
+            let bottom = launcher_body(&pen, &frame, true, &mut touch) + 14.0;
+            split = Some((bottom, bottom + PLATE_GAP));
+            searches_body(&pen, &frame, bottom + PLATE_GAP, titles, &mut touch)
+        }
         View::Item(check) => {
             let Outcome { league, listings, loading, problem, .. } = &check.result;
             let mut y = head(&pen, &frame, &check.item, league.as_deref(), state::rate_text(check.result.quote.as_ref()).as_deref(), (check.plan == Plan::Stack).then(|| quote::name_of(&check.item)));
             let searchable = check.searchable();
-            if check.plan == Plan::Stack {
+            if picking {
+                y = picker(&pen, &frame, y, check, &mut touch);
+            } else if check.plan == Plan::Stack {
                 // Priced from the cached list alone: nothing is searched, nothing to edit.
                 y = stack_body(&pen, &frame, y, check, now);
+            } else if check.in_bulk() {
+                // A map on the bulk exchange: its chips (Bulk turns back to listings), then the
+                // offers, or why there are none.
+                y = option_chips(&pen, &frame, y, check, fields, &mut touch);
+                if *loading {
+                    y = sentence(&pen, &frame, "Asking the bulk exchange", y + 6.0) + 2.0;
+                } else if let Some(problem) = problem.as_ref().filter(|_| check.result.bulk.is_empty()) {
+                    y = sentence(&pen, &frame, problem, y + 6.0) + 2.0;
+                }
+                for bulk in &check.result.bulk {
+                    y = bulk_offers(&pen, &frame, y, bulk, check.result.quote.as_ref());
+                }
             } else if listings.is_empty() && !loading {
                 // Nothing was priced: the reason takes the place of the price.
                 if let Some(problem) = problem {
@@ -1013,7 +1035,7 @@ fn lay(
     if floating {
         y += 14.0;
     } else {
-    match view.check().filter(|check| check.searchable()) {
+    match view.check().filter(|check| check.searchable() && !picking) {
         // `.rule`, then `.defaults`: the settings of the search, each with its pin.
         Some(check) => {
             pen.fill(frame.left, y, frame.right - frame.left, 1.0, 0, tone_hair());
@@ -1024,7 +1046,8 @@ fn lay(
         // `.foot` with the compact plate's padding-top.
         None => y += 8.0,
     }
-    actions(&pen, &frame, y, view.check(), budget, &mut touch);
+    // While a unique is to be picked, only "Close".
+    actions(&pen, &frame, y, view.check().filter(|_| !picking), budget, &mut touch);
     y += 30.0 + 14.0;
     }
     touch.zones.append(&mut touch.late);
@@ -1072,25 +1095,125 @@ fn lay(
     {
         pen.fill(0.0, 16.0, 4.0, (height - 2.0 * hair - 32.0).max(0.0), 2, tone);
     }
-    if let Some((rect, text)) = touch.tips.iter().find(|(rect, _)| touch.over(*rect)).copied() {
-        tooltip(&pen, rect, text);
+    if let Some((rect, text)) = touch.tips.iter().find(|(rect, _)| touch.over(*rect)).cloned() {
+        tooltip(&pen, rect, &text);
     }
-    let plate = Rect::from_min_size(origin, vec2(WIDTH, height));
-    if let (Some(p), Some((shadow_slot, plate_slot))) = (p, slots) {
-        p.set(
-            shadow_slot,
-            Shape::rect_filled(
-                plate.translate(vec2(0.0, SHADOW)),
-                14,
-                Color32::from_rgba_unmultiplied(4, 7, 16, 179),
-            ),
-        );
-        p.set(
-            plate_slot,
-            egui::epaint::RectShape::new(plate, 14, tone_plate(), Stroke::new(hair, tone_hair()), StrokeKind::Inside),
-        );
+    let plates = match split {
+        Some((end, start)) => [
+            Some(Rect::from_min_size(origin, vec2(WIDTH, end))),
+            Some(Rect::from_min_size(origin + vec2(0.0, start), vec2(WIDTH, height - start))),
+        ],
+        None => [Some(Rect::from_min_size(origin, vec2(WIDTH, height))), None],
+    };
+    if let (Some(p), Some((shadow_a, plate_a, shadow_b, plate_b))) = (p, slots) {
+        for (plate, (shadow_slot, plate_slot)) in plates.into_iter().zip([(shadow_a, plate_a), (shadow_b, plate_b)]) {
+            let Some(plate) = plate else { continue };
+            p.set(
+                shadow_slot,
+                Shape::rect_filled(
+                    plate.translate(vec2(0.0, SHADOW)),
+                    14,
+                    Color32::from_rgba_unmultiplied(4, 7, 16, 179),
+                ),
+            );
+            p.set(
+                plate_slot,
+                egui::epaint::RectShape::new(plate, 14, tone_plate(), Stroke::new(hair, tone_hair()), StrokeKind::Inside),
+            );
+        }
     }
     Painted { height, zones: touch.zones, fields: touch.fields, pins: touch.pins, chips: touch.chips, tracks: touch.tracks, menu: open }
+}
+
+/// An unidentified unique whose pick is still to come: the picker takes the place of the price.
+fn picking(check: &Check) -> bool {
+    check.picking()
+}
+
+/// The candidates as tiles: their picture over their name, four to a row.
+fn picker(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, touch: &mut Touch) -> f32 {
+    const GAP: f32 = 4.0;
+    const MAX_TILE: f32 = 132.0;
+    let columns = check.candidates.len().clamp(1, 4);
+    // Few candidates get a larger picture.
+    let picture: f32 = if columns <= 3 { 84.0 } else { 64.0 };
+    const LINE: f32 = 14.0;
+    // A unique found in Standard only says so under its name.
+    let legacy = |name: &str| zenith_data::is_legacy_unique(name);
+    let tag = if check.candidates.iter().any(|name| legacy(name)) { LINE } else { 0.0 };
+    let tile_h = 8.0 + picture + 2.0 + 2.0 * LINE + tag + 8.0;
+    let width = frame.right - frame.left;
+    let tile_w = ((width - GAP * (columns as f32 - 1.0)) / columns as f32).floor().min(MAX_TILE);
+    let top = y + 6.0;
+    for (index, name) in check.candidates.iter().enumerate() {
+        let (column, row) = (index % columns, index / columns);
+        // Each row is centred, the last one too when it is short.
+        let in_row = (check.candidates.len() - row * columns).min(columns) as f32;
+        let start = frame.left + (width - in_row * tile_w - GAP * (in_row - 1.0)) / 2.0;
+        let (x, y) = (start + column as f32 * (tile_w + GAP), top + row as f32 * (tile_h + GAP));
+        let rect = pen.r(x, y, tile_w, tile_h);
+        let over = touch.over(rect);
+        if over {
+            pen.fill(x, y, tile_w, tile_h, 12, tone_raise());
+        }
+        let square = Rect::from_min_size(pen.at(x + (tile_w - picture) / 2.0, y + 8.0), vec2(picture, picture));
+        let texture = check.candidate_icons.get(index).and_then(|url| url.as_deref()).and_then(|url| icons::get_url(pen.ctx, name, url));
+        match texture {
+            Some(texture) => pen.picture(texture, square),
+            None => {
+                // A soft round plate with the name's first letter.
+                pen.add(Shape::circle_filled(square.center(), picture / 2.0 - 6.0, Color32::from_white_alpha(14)));
+                let initial = pen.t(&name.chars().next().map(String::from).unwrap_or_default(), F::T600, 26.0, tone_mute());
+                let at = square.center() - pen.o;
+                pen.draw(&initial, at.x - initial.w / 2.0, at.y - 16.0 + pen.bl(26.0, 32.0));
+            }
+        }
+        // The name over two lines at most, the last cut short.
+        let colour = if over { tone_gold_hi() } else { tone_star() };
+        let room = tile_w - 8.0;
+        let mut rest = name.as_str();
+        let mut cut = false;
+        let mut drawn = 0;
+        for line in 0..2 {
+            if rest.is_empty() {
+                break;
+            }
+            let last = line == 1;
+            let mut taken = String::new();
+            let mut words = rest.split_whitespace().peekable();
+            while let Some(word) = words.peek() {
+                let longer = if taken.is_empty() { (*word).to_owned() } else { format!("{taken} {word}") };
+                if !taken.is_empty() && pen.t(&longer, F::T500, 11.0, colour).w > room {
+                    break;
+                }
+                taken = longer;
+                words.next();
+            }
+            let remainder = words.collect::<Vec<_>>().join(" ");
+            // The last line holds the whole remainder, cut with an ellipsis; an only word too
+            // wide is cut as well.
+            let shown = if last { format!("{taken} {remainder}").trim().to_owned() } else { taken };
+            let text = pen.fitted(&shown, F::T500, 11.0, colour, 0.0, room);
+            cut |= text.w < pen.t(&shown, F::T500, 11.0, colour).w;
+            pen.draw(&text, x + (tile_w - text.w) / 2.0, y + 8.0 + picture + 2.0 + line as f32 * LINE + pen.bl(11.0, LINE));
+            drawn = line + 1;
+            rest = if last { "" } else { name[name.len() - remainder.len()..].trim_start() };
+            if !last && remainder.is_empty() {
+                break;
+            }
+        }
+        // Right under the name.
+        if legacy(name) {
+            let text = pen.t("Standard only", F::T700, 10.5, tone_ember());
+            pen.draw(&text, x + (tile_w - text.w) / 2.0, y + 8.0 + picture + 2.0 + drawn as f32 * LINE + pen.bl(10.5, LINE));
+        }
+        if cut {
+            touch.tips.push((rect, name.clone()));
+        }
+        touch.zone(rect, Action::PickUnique(Some(index)));
+    }
+    let rows = check.candidates.len().div_ceil(columns) as f32;
+    top + rows * (tile_h + GAP) - GAP + 6.0
 }
 
 fn tone_danger() -> Color32 {
@@ -1211,7 +1334,12 @@ fn map_body(pen: &Pen<'_>, frame: &Frame, maps: &MapView, touch: &mut Touch) -> 
 }
 
 /// The quick menu: one row of rounded buttons, an icon and a label each.
-fn launcher_body(pen: &Pen<'_>, frame: &Frame, touch: &mut Touch) -> f32 {
+/// The clear gap between the quick menu and its saved searches, open under it.
+const PLATE_GAP: f32 = 10.0;
+
+/// The row of tools of the quick menu. `searches_open`: the button of the saved searches is lit,
+/// as its widget is open under the row.
+fn launcher_body(pen: &Pen<'_>, frame: &Frame, searches_open: bool, touch: &mut Touch) -> f32 {
     const PAD: f32 = 14.0;
     const ICON: f32 = 16.0;
     const HEIGHT: f32 = 34.0;
@@ -1220,10 +1348,15 @@ fn launcher_body(pen: &Pen<'_>, frame: &Frame, touch: &mut Touch) -> f32 {
     let widths: Vec<f32> = labels.iter().map(|label| PAD + ICON + 8.0 + label.w + PAD).collect();
     for (index, ((x, w), label)) in launcher::row(&widths, frame.left, frame.right, 8.0).into_iter().zip(&labels).enumerate() {
         let rect = pen.r(x, y, w, HEIGHT);
+        let lit = searches_open && launcher::items()[index].target == launcher::Target::Searches;
         let over = touch.over(rect);
-        let (fill, border) = if over { (tone_raise(), tone_line()) } else { (Color32::TRANSPARENT, tone_hair()) };
+        let (fill, border) = match (over, lit) {
+            (_, true) => (tone_raise(), tone_gold()),
+            (true, false) => (tone_raise(), tone_line()),
+            (false, false) => (Color32::TRANSPARENT, tone_hair()),
+        };
         pen.boxed(rect, 17, fill, border);
-        let tone = if over { tone_gold_hi() } else { tone_gold() };
+        let tone = if over || lit { tone_gold_hi() } else { tone_gold() };
         launcher_icon(pen, launcher::items()[index].icon, x + PAD + ICON / 2.0, y + HEIGHT / 2.0, tone);
         pen.draw(label, x + PAD + ICON + 8.0, y + 7.0 + pen.bl(13.0, 20.0));
         touch.zone(rect, Action::Launch(index));
@@ -1258,11 +1391,11 @@ fn launcher_icon(pen: &Pen<'_>, icon: launcher::Icon, cx: f32, cy: f32, tone: Co
 }
 
 /// The saved searches: a title line with the "edit" link, then a grid of buttons.
-fn searches_body(pen: &Pen<'_>, frame: &Frame, titles: &[String], touch: &mut Touch) -> f32 {
+fn searches_body(pen: &Pen<'_>, frame: &Frame, top: f32, titles: &[String], touch: &mut Touch) -> f32 {
     const CELL: f32 = 32.0;
     const GAP: f32 = 6.0;
     let width = frame.right - frame.left;
-    let mut y = 14.0;
+    let mut y = top + 14.0;
     pen.draw(&pen.t("Stash searches", F::T600, 13.0, tone_mute()), frame.left, y + pen.bl(13.0, 20.0));
     let edit = pen.t("edit", F::T500, 12.0, tone_gold_hi());
     let link = pen.r(frame.right - edit.w - 16.0, y - 4.0, edit.w + 16.0, 28.0);
@@ -1289,11 +1422,21 @@ fn searches_body(pen: &Pen<'_>, frame: &Frame, titles: &[String], touch: &mut To
     y + launcher::grid_height(shown, CELL, GAP)
 }
 
+/// An action button box: a raised square with an 8px radius. The outlined main button keeps its
+/// copper border and is filled once lit.
+fn action_box(pen: &Pen<'_>, rect: Rect, fill: Color32, border: Color32) {
+    if fill == Color32::TRANSPARENT && border != tone_gold() {
+        pen.boxed(rect, 8, tone_raise(), tone_raise());
+    } else {
+        pen.boxed(rect, 8, fill, border);
+    }
+}
+
 /// `.btn`: 30px tall, a 1px border, its label in the middle (12px from the border when the button
 /// is as wide as its label asks). Returns where it is.
 fn button(pen: &Pen<'_>, x: f32, y: f32, w: f32, label: &Txt, fill: Color32, border: Color32) -> Rect {
     let rect = pen.r(x, y, w, 30.0);
-    pen.boxed(rect, 15, fill, border);
+    action_box(pen, rect, fill, border);
     pen.draw(label, x + (w - label.w) / 2.0, y + 5.0 + pen.bl(13.0, 20.0));
     rect
 }
@@ -1364,13 +1507,13 @@ fn actions(pen: &Pen<'_>, frame: &Frame, y: f32, check: Option<&Check>, budget: 
     let x = frame.right - w;
     let rect = pen.r(x, y, w, 30.0);
     let (fill, border) = lifted(touch.over(rect));
-    pen.boxed(rect, 15, fill, border);
+    action_box(pen, rect, fill, border);
     let btn_base = y + 5.0 + pen.bl(13.0, 20.0);
     pen.draw(&close, x + pad, btn_base);
     // the key: an inline box, its border around the text's content area
     let kx = x + pad + close.w + 6.0;
     let key_h = pen.ascent(12.0) + pen.descent(12.0) + 2.0 * hair;
-    pen.boxed(pen.r(kx, btn_base - pen.ascent(12.0) - hair, key_w, key_h), 6, Color32::TRANSPARENT, tone_hair());
+    pen.boxed(pen.r(kx, btn_base - pen.ascent(12.0) - hair, key_w, key_h), 4, Color32::TRANSPARENT, tone_hair());
     pen.draw(&esc, kx + hair + 6.0, btn_base);
     touch.zone(rect, Action::Close);
 }
@@ -1597,7 +1740,7 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
         let excluded = row.filter.is_some_and(|filter| check.excluded(filter));
         let special = Special::of(row);
         let colour = if excluded { tone_ember() } else { row_tone(on, special) };
-        let end = text_end(frame, on);
+        let end = text_end(frame, on && crate::field::has_fields(check, row));
         let room = end - text_x;
         // The whole mod is one switch, however many lines it has.
         let block = ROW * row.lines.len() as f32;
@@ -1634,7 +1777,7 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
             pen.fill(frame.left, y, frame.right - frame.left, 1.0, 0, tone_hair());
         }
         after_implicit = row.implicit;
-        if let (true, true, Some(filter)) = (on, check.leads(row), row.filter) {
+        if let (true, true, true, Some(filter)) = (on, check.leads(row), crate::field::has_fields(check, row), row.filter) {
             // While its slider is held, the minimum shows the value held.
             num_field(pen, fields_x(frame), y, check, fields, Target::min(filter), held.map(|drag| drag.value()), touch);
             num_field(pen, frame.right - NUM.0, y, check, fields, Target::max(filter), None, touch);
@@ -1726,11 +1869,22 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
                 }
                 (None, true) => {
                     let mark = pen.t("?", F::T700, TIER_TEXT.0, tone_ember());
-                    let text = pen.fitted(line, F::T400, size, colour, 0.0, room - UNMATCHED_GAP - mark.w);
+                    let fit = room - UNMATCHED_GAP - mark.w;
+                    let text = pen.fitted(line, F::T400, size, colour, 0.0, fit);
                     pen.draw(&text, text_x, base);
                     pen.draw(&mark, text_x + text.w + UNMATCHED_GAP, base);
+                    if pen.t(line, F::T400, size, colour).w > fit {
+                        touch.tips.push((pen.r(text_x, y + index as f32 * ROW, text.w, ROW), line.clone()));
+                    }
                 }
-                (None, false) => pen.draw(&pen.fitted(line, weight, size, colour, 0.0, room), text_x, base),
+                (None, false) => {
+                    let text = pen.fitted(line, weight, size, colour, 0.0, room);
+                    pen.draw(&text, text_x, base);
+                    // Cut short: the whole line under the pointer.
+                    if pen.t(line, weight, size, colour).w > room {
+                        touch.tips.push((pen.r(text_x, y + index as f32 * ROW, text.w, ROW), line.clone()));
+                    }
+                }
             }
             if excluded {
                 // Struck through: the whole of the text the line shows.
@@ -2058,7 +2212,7 @@ fn settings(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, pins: Config, t
         let label = check.setting_label(setting);
         let label_w = pen.t(label, F::T400, size, tone_star()).w;
         let width = hair + TOKEN_PAD.0 + PIN + label_w + TOKEN_PAD.1 + hair;
-        pen.boxed(pen.r(x, y, width, TOKEN), 13, Color32::TRANSPARENT, tone_hair());
+        pen.boxed(pen.r(x, y, width, TOKEN), 7, Color32::TRANSPARENT, tone_hair());
 
         // `.pin`, in the middle of the chip's height; `.pin:hover` is a disc behind it.
         let (pin_x, pin_y) = (x + hair + TOKEN_PAD.0, y + (TOKEN - PIN) / 2.0);
@@ -2195,12 +2349,62 @@ enum Special {
     Corrupted,
     /// An enchant of the item.
     Enchant,
+    /// A mod a unique rolls from a pool of its own, as Watcher's Eye does.
+    Variant,
+    /// The implicit of a vestigial item.
+    Vestigial,
     /// An influence, an Eldritch implicit, the synthesis, an essence...: see `Origin`.
     Origin(zenith_core::Origin),
+    /// Any of the four conquerors' citadels, on the base view of a map.
+    Conquerors,
+    /// A map the Originator's memories influence.
+    Originator,
 }
 
 /// The tone of an origin's pill, each apart from the marks above and from the others. Bright
 /// enough to carry the dark letter on every theme's plate.
+/// The violet of a vestigial implicit, as the game writes it.
+const VESTIGIAL: Color32 = Color32::from_rgb(0xA6, 0x8C, 0xF2);
+
+/// The tone of any conqueror: theirs, mixed.
+const CONQUERORS: Color32 = Color32::from_rgb(0xD8, 0xC6, 0x9A);
+
+/// The conquerors, in the order their symbols fan out.
+const CONQUEROR_ORIGINS: [zenith_core::Origin; 4] =
+    [zenith_core::Origin::Crusader, zenith_core::Origin::Redeemer, zenith_core::Origin::Hunter, zenith_core::Origin::Warlord];
+
+/// The tone of a map the Originator's memories influence.
+const ORIGINATOR: Color32 = Color32::from_rgb(0xB7, 0x8C, 0xFF);
+
+/// What the implicit of a map tells of it: who occupies it, whose citadel it holds, whose
+/// influence it bears, each in the tone of that influence.
+fn map_implicit(row: &crate::check::Row) -> Option<Special> {
+    use zenith_core::Origin as O;
+    if !row.implicit {
+        return None;
+    }
+    let text = row.lines.join(" ");
+    if text.contains("Originator's Memories") {
+        return Some(Special::Originator);
+    }
+    if text == "Any conqueror" {
+        return Some(Special::Conquerors);
+    }
+    let origin = [
+        ("Map is occupied by", O::Elder),
+        ("Any Elder guardian", O::Elder),
+        ("Baran's Citadel", O::Crusader),
+        ("Veritania's Citadel", O::Redeemer),
+        ("Al-Hezmin's Citadel", O::Hunter),
+        ("Drox's Citadel", O::Warlord),
+        ("influenced by The Shaper", O::Shaper),
+        ("influenced by The Elder", O::Elder),
+    ]
+    .into_iter()
+    .find(|(words, _)| text.contains(words))?;
+    Some(Special::Origin(origin.1))
+}
+
 fn origin_tone(origin: zenith_core::Origin) -> Color32 {
     use zenith_core::Origin as O;
     let (r, g, b) = match origin {
@@ -2256,7 +2460,9 @@ impl Special {
             (false, false, true, _) => Some(Self::Foulborn),
             (false, false, false, true) => Some(Self::Corrupted),
             (false, false, false, false) if row.kind.as_deref() == Some("Enchant") => Some(Self::Enchant),
-            (false, false, false, false) => row.origin.map(Self::Origin),
+            (false, false, false, false) if row.kind.as_deref().is_some_and(|kind| kind.starts_with("Vestigial")) => Some(Self::Vestigial),
+            (false, false, false, false) if row.variant => Some(Self::Variant),
+            (false, false, false, false) => row.origin.map(Self::Origin).or_else(|| map_implicit(row)),
         }
     }
 
@@ -2268,7 +2474,11 @@ impl Special {
             Self::Foulborn => foulborn_tone(),
             Self::Corrupted => tone_ember(),
             Self::Enchant => ENCHANT,
+            Self::Variant => UNIQUE,
+            Self::Vestigial => VESTIGIAL,
             Self::Origin(origin) => origin_tone(origin),
+            Self::Conquerors => CONQUERORS,
+            Self::Originator => ORIGINATOR,
         }
     }
 
@@ -2280,7 +2490,11 @@ impl Special {
             Self::Foulborn => foulborn_text(),
             Self::Corrupted => tone_ember(),
             Self::Enchant => ENCHANT_TEXT,
+            Self::Variant => lighter(UNIQUE),
+            Self::Vestigial => lighter(VESTIGIAL),
             Self::Origin(origin) => lighter(origin_tone(origin)),
+            Self::Conquerors => lighter(CONQUERORS),
+            Self::Originator => lighter(ORIGINATOR),
         }
     }
 
@@ -2292,7 +2506,11 @@ impl Special {
             Self::Foulborn => "FB",
             Self::Corrupted => "V",
             Self::Enchant => "E",
+            Self::Variant => "U",
+            Self::Vestigial => "Vg",
             Self::Origin(origin) => origin_letter(origin),
+            Self::Conquerors => "Co",
+            Self::Originator => "Or",
         }
     }
 }
@@ -2370,7 +2588,7 @@ fn tier_mark(pen: &Pen<'_>, touch: &mut Touch, x: f32, y: f32, tier: Option<u32>
                 let symbol = icons::symbol(pen.ctx, "Breach");
                 let (width, tall) = if symbol.is_some() { (SYMBOL + 6.0, SYMBOL_PILL) } else { (PILL_MIN, line_height) };
                 let pill_top = if symbol.is_some() { y + (ROW - SYMBOL_PILL) / 2.0 - 2.0 } else { top };
-                touch.tips.push((pen.r(x, pill_top, width, tall), "Foulborn mod"));
+                touch.tips.push((pen.r(x, pill_top, width, tall), "Foulborn mod".into()));
                 if let Some(texture) = symbol {
                     pen.fill(x, pill_top, width, tall, 10, symbol_fill(colour));
                     pen.picture(texture, Rect::from_center_size(pen.at(x + width / 2.0, pill_top + tall / 2.0), vec2(SYMBOL, SYMBOL)));
@@ -2385,6 +2603,22 @@ fn tier_mark(pen: &Pen<'_>, touch: &mut Touch, x: f32, y: f32, tier: Option<u32>
                 }
                 return;
             }
+            // Any conqueror: their four symbols fanned out, once they are all there.
+            if special == Special::Conquerors {
+                let symbols: Vec<_> = CONQUEROR_ORIGINS.iter().filter_map(|origin| icons::symbol(pen.ctx, origin.label())).collect();
+                if symbols.len() == CONQUEROR_ORIGINS.len() {
+                    let (icon, step, pad) = (17.0, 8.0, 3.0);
+                    let width = icon + step * (symbols.len() - 1) as f32 + 2.0 * pad;
+                    let pill_top = y + (ROW - SYMBOL_PILL) / 2.0 - 2.0;
+                    pen.fill(x, pill_top, width, SYMBOL_PILL, 10, symbol_fill(colour));
+                    touch.tips.push((pen.r(x, pill_top, width, SYMBOL_PILL), special_tip(special).into()));
+                    for (index, texture) in symbols.into_iter().enumerate() {
+                        let at = pen.at(x + pad + step * index as f32, pill_top + (SYMBOL_PILL - icon) / 2.0);
+                        pen.picture(texture, Rect::from_min_size(at, vec2(icon, icon)));
+                    }
+                    return;
+                }
+            }
             // An influence's pill holds its symbol (and the tier after it) once the symbol is there.
             if let Special::Origin(origin) = special
                 && let Some(texture) = icons::symbol(pen.ctx, origin.label())
@@ -2394,7 +2628,7 @@ fn tier_mark(pen: &Pen<'_>, touch: &mut Touch, x: f32, y: f32, tier: Option<u32>
                 let width = (SYMBOL + 2.0 * pad + text.as_ref().map_or(0.0, |text| text.w + 2.0)).max(SYMBOL + 6.0);
                 let pill_top = y + (ROW - SYMBOL_PILL) / 2.0 - 2.0;
                 pen.fill(x, pill_top, width, SYMBOL_PILL, 10, symbol_fill(colour));
-                touch.tips.push((pen.r(x, pill_top, width, SYMBOL_PILL), origin_tip(origin)));
+                touch.tips.push((pen.r(x, pill_top, width, SYMBOL_PILL), origin_tip(origin).into()));
                 let icon_x = if text.is_some() { x + pad } else { x + (width - SYMBOL) / 2.0 };
                 pen.picture(texture, Rect::from_min_size(pen.at(icon_x, pill_top + (SYMBOL_PILL - SYMBOL) / 2.0), vec2(SYMBOL, SYMBOL)));
                 if let Some(text) = &text {
@@ -2412,7 +2646,7 @@ fn tier_mark(pen: &Pen<'_>, touch: &mut Touch, x: f32, y: f32, tier: Option<u32>
             let text = pen.spans(&[(&label, F::T700, tone_night())], size, 0.01 * size);
             let width = (text.w + 2.0 * PILL_PAD).max(PILL_MIN);
             pen.fill(x, top, width, line_height, 8, colour);
-            touch.tips.push((pen.r(x, top, width, line_height), special_tip(special)));
+            touch.tips.push((pen.r(x, top, width, line_height), special_tip(special).into()));
             pen.draw(&text, x + (width - text.w) / 2.0, top + pen.bl(size, line_height));
         }
         (None, Some(label)) => {
@@ -2463,19 +2697,27 @@ fn special_tip(special: Special) -> &'static str {
         Special::Foulborn => "Foulborn mod",
         Special::Corrupted => "Corruption implicit",
         Special::Enchant => "Enchant",
+        Special::Variant => "Unique pool",
+        Special::Vestigial => "Vestigial",
         Special::Origin(origin) => origin_tip(origin),
+        Special::Conquerors => "Any of the four conquerors",
+        Special::Originator => "Originator",
     }
 }
 
 /// A small plate with `text`, above the mark at `rect` (under it when there is no room above).
 fn tooltip(pen: &Pen<'_>, rect: Rect, text: &str) {
-    let label = pen.t(text, F::T600, 11.5, tone_star());
-    let (w, h) = (label.w + 16.0, 22.0);
+    // A text wider than the panel goes on as many lines as it needs.
+    let lines = pen.wrapped(text, F::T600, 11.5, tone_star(), WIDTH - 8.0 - 16.0);
+    let widest = lines.iter().map(|line| line.w).fold(0.0, f32::max);
+    let (w, h) = (widest + 16.0, 15.0 * lines.len() as f32 + 7.0);
     let x = (rect.min.x - pen.o.x + rect.width() / 2.0 - w / 2.0).clamp(4.0, (WIDTH - w - 4.0).max(4.0));
     let above = rect.min.y - pen.o.y - h - 4.0;
     let y = if above >= 2.0 { above } else { rect.max.y - pen.o.y + 4.0 };
     pen.boxed(pen.r(x, y, w, h), 6, tone_night(), tone_line());
-    pen.draw(&label, x + 8.0, y + (h - 15.0) / 2.0 + pen.bl(11.5, 15.0));
+    for (index, line) in lines.iter().enumerate() {
+        pen.draw(line, x + 8.0, y + 3.5 + 15.0 * index as f32 + pen.bl(11.5, 15.0));
+    }
 }
 
 /// An original rift mark, centred on (`cx`, `cy`): a small eye-shaped ellipse with a pupil and
@@ -2778,14 +3020,26 @@ fn stack_body(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, now: i64) -> 
         y += 24.0 + 10.0;
     }
     for bulk in &check.result.bulk {
-        y = bulk_offers(pen, frame, y, bulk);
+        y = bulk_offers(pen, frame, y, bulk, check.result.quote.as_ref());
     }
     y
 }
 
-/// `Live offers`: what sellers ask on the bulk exchange, one row each (the ratio, the stock, the
-/// seller), the median of the ratios and the age of the answer.
-fn bulk_offers(pen: &Pen<'_>, frame: &Frame, y: f32, bulk: &zenith_trade::Bulk) -> f32 {
+/// The price list's price of one item in the currency of `bulk`, when it knows one.
+fn market_price(bulk: &zenith_trade::Bulk, quote: Option<&quote::Quote>) -> Option<f64> {
+    let (cheapest, _) = quote?.each?;
+    match bulk.have.as_str() {
+        "chaos" => Some(cheapest),
+        "divine" => quote?.divine.filter(|rate| *rate > 0.0).map(|rate| cheapest / rate),
+        _ => None,
+    }
+}
+
+/// `Live offers`: what sellers ask on the bulk exchange, up to twenty compact rows in price order
+/// (the ratio, the stock, the seller) with the price list's own price among them, then the age
+/// of the answer.
+fn bulk_offers(pen: &Pen<'_>, frame: &Frame, y: f32, bulk: &zenith_trade::Bulk, quote: Option<&quote::Quote>) -> f32 {
+    use zenith_trade::Row;
     let (left, right) = (frame.left, frame.right);
     pen.fill(left, y, right - left, 1.0, 0, tone_hair());
     let y = y + 1.0 + 10.0;
@@ -2798,14 +3052,25 @@ fn bulk_offers(pen: &Pen<'_>, frame: &Frame, y: f32, bulk: &zenith_trade::Bulk) 
         pen.draw_rich(&pen.rich(&live, F::T700, 14.0, tone_gold_hi(), 15.0), left, base);
         y += 24.0;
     }
-    for offer in &bulk.offers {
-        let base = y + pen.bl(13.0, 22.0);
-        pen.draw_rich(&pen.rich(&state::ratio_text(offer.each(), &bulk.have), F::T600, 13.0, tone_star(), 14.0), left, base);
-        let seller = pen.t(&offer.seller, F::T400, 12.0, tone_mute());
-        pen.draw_right(&seller, right, base);
-        let stock = pen.t(&format!("{} in stock", offer.stock), F::T400, 12.0, tone_mute());
-        pen.draw_right(&stock, right - seller.w - 12.0, base);
-        y += 22.0;
+    const ROW: f32 = 18.0;
+    for row in bulk.rows(market_price(bulk, quote)) {
+        let base = y + pen.bl(12.0, ROW);
+        match row {
+            Row::Offer(offer) => {
+                pen.draw_rich(&pen.rich(&state::ratio_text(offer.each(), &bulk.have), F::T600, 12.0, tone_star(), 13.0), left, base);
+                let seller = pen.t(&offer.seller, F::T400, 12.0, tone_mute());
+                pen.draw_right(&seller, right, base);
+                let stock = pen.t(&format!("{} in stock", offer.stock), F::T400, 12.0, tone_mute());
+                pen.draw_right(&stock, right - seller.w - 12.0, base);
+            }
+            Row::Market(each) => {
+                // The price list's line: gold, on a faint band, named by its source.
+                pen.fill(left - 4.0, y, right - left + 8.0, ROW, 0, tone_hair());
+                pen.draw_rich(&pen.rich(&state::ratio_text(each, &bulk.have), F::T700, 12.0, tone_gold_hi(), 13.0), left, base);
+                pen.draw_right(&pen.t(quote::SOURCE_NAME, F::T700, 12.0, tone_gold()), right, base);
+            }
+        }
+        y += ROW;
     }
     y + 8.0
 }

@@ -1201,17 +1201,24 @@ fn check(t0: Instant) {
             return;
         }
         Err(error) => {
+            // Nothing to say: no panel.
             log!("nothing copied: {error:?}");
-            show(t0, View::Message(state::NOT_AN_ITEM.into()));
             return;
         }
     };
     // With the pack the worker has read, if any: no file is read here.
     let pack = PACK.get().and_then(worker::pack_in);
     let pins = *CONFIG.lock().unwrap();
-    let view = state::read_pinned(&text, pack.as_deref(), &pins);
-    let search = view.loading();
+    // A currency, a card or a map of its own kind goes to the thread too: it holds the price list.
+    let view = state::awaiting_quote(state::read_pinned(&text, pack.as_deref(), &pins));
+    // A unique to pick from searches nothing yet, but the thread gets its candidates' pictures.
+    let search = view.loading() || view.check().is_some_and(check::Check::picking);
     log!("copied {} characters in {:.0} ms", text.chars().count(), t0.elapsed().as_secs_f64() * 1000.0);
+    // Not an item, or an item that is not priced: no panel at all.
+    if state::is_useless(&view) {
+        log!("nothing to price: no panel");
+        return;
+    }
     show(t0, view);
     if search
         && let Some(jobs) = JOBS.get()
@@ -1322,9 +1329,14 @@ fn act_menu(action: Action) {
     };
     match action {
         Action::Launch(index) => match launcher::target(index) {
+            // The saved searches open under the menu, and close again from the same button.
             Some(launcher::Target::Searches) => {
-                let titles = current_hotkeys().map(|keys| keys.searches.iter().map(|s| s.title().to_owned()).collect()).unwrap_or_default();
-                refit(View::Searches(titles));
+                if matches!(*VIEW.lock().unwrap(), View::Searches(_)) {
+                    refit(View::Launcher);
+                } else {
+                    let titles = current_hotkeys().map(|keys| keys.searches.iter().map(|s| s.title().to_owned()).collect()).unwrap_or_default();
+                    refit(View::Searches(titles));
+                }
             }
             Some(launcher::Target::Settings(page)) => open_settings(page),
             None => {}
@@ -1603,6 +1615,8 @@ fn keys_of(event: &egui::Event) -> Vec<field::Key> {
     use field::Key;
     match event {
         egui::Event::Text(text) => text.chars().map(Key::Char).collect(),
+        // What is pasted is typed: the field keeps the figures, the point and the sign.
+        egui::Event::Paste(text) => text.trim().chars().map(Key::Char).collect(),
         egui::Event::Key { key, pressed: true, modifiers, .. } => {
             let key = match key {
                 egui::Key::Backspace => Some(Key::Backspace),
@@ -1713,6 +1727,11 @@ impl eframe::App for App {
                 };
                 let before = filters(&view);
                 view.take(update.step);
+                // The list had no price for it after all: the panel goes, it has nothing to say.
+                if state::is_useless(&view) {
+                    hide("nothing to price");
+                    continue;
+                }
                 // Read differently, its fields are no longer the ones that were typed in, nor
                 // its sliders the one that was held.
                 if filters(&view) != before {
@@ -1823,6 +1842,20 @@ impl eframe::App for App {
         // The keys first, so that this frame paints what they typed. They only come while the
         // panel has the keyboard, which nothing but a click in a number field gives it.
         if up || dev::keys_while_hidden() {
+            // Copy and cut take the selection of the field being typed in; cut then deletes it.
+            let (copy, cut) = ui.input(|input| {
+                let has = |wanted: &egui::Event| input.events.iter().any(|event| event == wanted);
+                (has(&egui::Event::Copy), has(&egui::Event::Cut))
+            });
+            if copy || cut {
+                let selected = FIELDS.lock().unwrap().selected_text();
+                if let Some(text) = selected {
+                    ui.ctx().copy_text(text);
+                    if cut {
+                        on_key(field::Key::Delete, budget);
+                    }
+                }
+            }
             let keys: Vec<field::Key> = ui.input(|input| input.events.iter().flat_map(keys_of).collect());
             for key in keys {
                 on_key(key, budget);

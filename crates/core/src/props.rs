@@ -36,6 +36,20 @@ pub struct Properties {
     pub quality_spares_defences: bool,
     /// A mod of the item says `Quality does not increase Physical Damage`.
     pub quality_spares_physical: bool,
+    /// A map's tier: its `Map Tier:` line, or its base, `Map (Tier 16)`.
+    pub map_tier: Option<u32>,
+    /// What a map adds, in percent: `Atlas Drops`, `Item Rarity`, `Monster Pack Size`,
+    /// `Item Quantity`.
+    pub atlas_drops: Option<u32>,
+    pub item_rarity: Option<u32>,
+    pub pack_size: Option<u32>,
+    pub item_quantity: Option<u32>,
+    /// What else a map drops more of, in percent: `More Maps`, `More Scarabs`, `More Currency`,
+    /// `More Divination Cards`.
+    pub more_maps: Option<u32>,
+    pub more_scarabs: Option<u32>,
+    pub more_currency: Option<u32>,
+    pub more_cards: Option<u32>,
 }
 
 /// The quality the trade site compares items at.
@@ -152,6 +166,15 @@ pub fn parse_properties(item: &Item) -> Properties {
                 let number = first_word(value).trim_end_matches('%').parse().ok();
                 keep_first(&mut properties.critical_chance, number);
             }
+            "Map Tier" => keep_first(&mut properties.map_tier, whole(value)),
+            "Atlas Drops" => keep_first(&mut properties.atlas_drops, whole(value)),
+            "Item Rarity" => keep_first(&mut properties.item_rarity, whole(value)),
+            "Monster Pack Size" => keep_first(&mut properties.pack_size, whole(value)),
+            "Item Quantity" => keep_first(&mut properties.item_quantity, whole(value)),
+            "More Maps" => keep_first(&mut properties.more_maps, whole(value)),
+            "More Scarabs" => keep_first(&mut properties.more_scarabs, whole(value)),
+            "More Currency" => keep_first(&mut properties.more_currency, whole(value)),
+            "More Divination Cards" => keep_first(&mut properties.more_cards, whole(value)),
             "Sockets" if properties.sockets.is_none() => {
                 let sockets = value.trim();
                 properties.sockets = Some(sockets.to_string());
@@ -159,6 +182,9 @@ pub fn parse_properties(item: &Item) -> Properties {
             }
             _ => {}
         }
+    }
+    if properties.map_tier.is_none() {
+        properties.map_tier = item.base.split_once("(Tier ").and_then(|(_, rest)| rest.trim_end_matches(')').parse().ok());
     }
     properties
 }
