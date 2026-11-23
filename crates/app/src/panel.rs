@@ -892,6 +892,8 @@ struct Touch {
     tracks: Vec<Track>,
     /// What the pointer reads when it rests on a mark: its rectangle and its sentence.
     tips: Vec<(Rect, String)>,
+    /// The text of a mod cut short, shown whole over its rows while the pointer is on it.
+    unfolds: Vec<Unfold>,
 }
 
 impl Touch {
@@ -941,6 +943,7 @@ fn lay(
         anchors: Vec::new(),
         tracks: Vec::new(),
         tips: Vec::new(),
+        unfolds: Vec::new(),
     };
 
     // The plate's height is known only once the rows are laid out: reserve its slots.
@@ -1094,6 +1097,9 @@ fn lay(
         && let Some(tone) = maps_alarm(maps)
     {
         pen.fill(0.0, 16.0, 4.0, (height - 2.0 * hair - 32.0).max(0.0), 2, tone);
+    }
+    if let Some(unfold) = touch.unfolds.iter().find(|unfold| touch.over(unfold.rect)) {
+        unfolded(&pen, unfold);
     }
     if let Some((rect, text)) = touch.tips.iter().find(|(rect, _)| touch.over(*rect)).cloned() {
         tooltip(&pen, rect, &text);
@@ -1817,39 +1823,44 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
         }
         // `.star-btn::before`, and its `:hover`: lit when searched, a hint of it when it could be.
         let marker = look::marker();
+        // In the mod's own tone when it has one (Foulborn, enchant, influence...), gold otherwise.
         let bar = match (marker, on, over) {
-            (Marker::Bar, true, false) => Some(tone_gold()),
-            (Marker::Bar, true, true) => Some(tone_gold_hi()),
+            (Marker::Bar, true, false) => Some(special.map_or_else(tone_gold, Special::tone)),
+            (Marker::Bar, true, true) => Some(special.map_or_else(tone_gold_hi, |special| lighter(special.tone()))),
             (Marker::Bar, false, true) => Some(tone_line()),
             _ => None,
         }
         .filter(|_| !excluded);
         let weight = if on && marker == Marker::Plain { F::T600 } else { F::T400 };
+        let (row_top, mut cut) = (y, false);
         for (index, line) in row.lines.iter().enumerate() {
-            if let Some(bar) = bar {
-                // 3 by 18, in the middle of the 16px to the left of the row.
-                pen.fill((16.0 - 3.0) / 2.0, y + (ROW - 18.0) / 2.0, 3.0, 18.0, 2, bar);
+            if let Some(bar) = bar.filter(|_| index == 0) {
+                // 3 wide, in the middle of the 16px to the left of the row: one bar down all the
+                // lines of the mod, which is one switch; 18 tall on a single line.
+                pen.fill((16.0 - 3.0) / 2.0, y + (ROW - 18.0) / 2.0, 3.0, block - (ROW - 18.0), 2, bar);
             }
             // The mods of a unique have no tier, nor have those of an item searched by its very
             // base: where the mark would be, the bar of the roll alone, for a mod the item gives
             // the range of. A fractured mod and a crafted one have their pill there whatever
             // they are on.
             let untiered = matches!(check.plan, Plan::Unique | Plan::Exact { .. });
+            // The mark sits in the middle of all the lines of the mod.
+            let mark_y = y + (block - ROW) / 2.0;
             if index == 0 && marker == Marker::Badge && special.is_none() {
                 // The tier itself is the badge: filled when the mod is searched.
-                let top = y + (ROW - 17.0) / 2.0;
+                let top = mark_y + (ROW - 17.0) / 2.0;
                 let (fill, edge, ink) = if on { (tone_gold(), tone_gold(), tone_night()) } else { (Color32::TRANSPARENT, tone_line(), tone_mute()) };
                 pen.boxed(pen.r(frame.left, top, 30.0, 17.0), 9, fill, edge);
                 let label = row.tier.map_or_else(String::new, |tier| format!("T{tier}"));
                 let text = pen.t(&label, if on { F::T700 } else { F::T600 }, TIER_TEXT.0, ink);
                 pen.draw(&text, frame.left + (30.0 - text.w) / 2.0, top + (17.0 - TIER_TEXT.1) / 2.0 + pen.bl(TIER_TEXT.0, TIER_TEXT.1));
                 if row.filter.is_some_and(|filter| check.is_pure(filter)) {
-                    pure_mark(pen, frame.left, y);
+                    pure_mark(pen, frame.left, mark_y);
                 }
             } else if index == 0 && (row.tier.is_some() || untiered || special.is_some()) {
-                tier_mark(pen, touch, frame.left, y, row.tier, row.roll, on, special);
+                tier_mark(pen, touch, frame.left, mark_y, row.tier, row.roll, on, special);
                 if row.filter.is_some_and(|filter| check.is_pure(filter)) {
-                    pure_mark(pen, frame.left, y);
+                    pure_mark(pen, frame.left, mark_y);
                 }
             }
             let lift = if index == 0 && scale.is_some() { SLIDER_LIFT } else { 0.0 };
@@ -1873,17 +1884,12 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
                     let text = pen.fitted(line, F::T400, size, colour, 0.0, fit);
                     pen.draw(&text, text_x, base);
                     pen.draw(&mark, text_x + text.w + UNMATCHED_GAP, base);
-                    if pen.t(line, F::T400, size, colour).w > fit {
-                        touch.tips.push((pen.r(text_x, y + index as f32 * ROW, text.w, ROW), line.clone()));
-                    }
+                    cut |= pen.t(line, F::T400, size, colour).w > fit;
                 }
                 (None, false) => {
                     let text = pen.fitted(line, weight, size, colour, 0.0, room);
                     pen.draw(&text, text_x, base);
-                    // Cut short: the whole line under the pointer.
-                    if pen.t(line, weight, size, colour).w > room {
-                        touch.tips.push((pen.r(text_x, y + index as f32 * ROW, text.w, ROW), line.clone()));
-                    }
+                    cut |= pen.t(line, weight, size, colour).w > room;
                 }
             }
             if excluded {
@@ -1900,6 +1906,11 @@ fn mod_rows(pen: &Pen<'_>, frame: &Frame, mut y: f32, check: &Check, face: &Face
                 pen.fill(frame.left - 4.0, y, frame.right - frame.left + 8.0, block, 8, tone_plate().gamma_multiply(0.6));
             }
             y += ROW;
+        }
+        // Cut short: the whole mod over its rows while the pointer is on its text.
+        if cut {
+            let rect = pen.r(text_x, row_top, room, block);
+            touch.unfolds.push(Unfold { rect, lines: row.lines.clone(), weight, size, colour });
         }
     }
     y + 8.0
@@ -2702,6 +2713,28 @@ fn special_tip(special: Special) -> &'static str {
         Special::Origin(origin) => origin_tip(origin),
         Special::Conquerors => "Any of the four conquerors",
         Special::Originator => "Originator",
+    }
+}
+
+/// The text of a mod that was cut short.
+struct Unfold {
+    rect: Rect,
+    lines: Vec<String>,
+    weight: F,
+    size: f32,
+    colour: Color32,
+}
+
+/// The whole text of a mod, wrapped to the width its row gives it, on a plate over the row and
+/// the ones under it.
+fn unfolded(pen: &Pen<'_>, unfold: &Unfold) {
+    const LINE: f32 = 19.0;
+    let (x, y, w) = (unfold.rect.min.x - pen.o.x, unfold.rect.min.y - pen.o.y, unfold.rect.width());
+    let lines: Vec<Txt> = unfold.lines.iter().flat_map(|line| pen.wrapped(line, unfold.weight, unfold.size, unfold.colour, w)).collect();
+    let h = LINE * lines.len() as f32 + 10.0;
+    pen.boxed(pen.r(x - 6.0, y + 2.0, w + 12.0, h), 6, tone_raise(), tone_line());
+    for (index, line) in lines.iter().enumerate() {
+        pen.draw(line, x, y + 7.0 + LINE * index as f32 + pen.bl(unfold.size, LINE));
     }
 }
 

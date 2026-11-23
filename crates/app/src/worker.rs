@@ -852,6 +852,19 @@ pub fn price_file(path: &str, search: bool, way: Option<Way>) -> i32 {
     code
 }
 
+/// The panel of the item a file holds, as the program would show it once its search is done:
+/// with the data pack and the price list on disk, and a real search. For `--render --view
+/// file:<path>`.
+#[cfg(feature = "dev")]
+pub fn checked_view(path: &str) -> Option<View> {
+    let text = std::fs::read(path).ok().and_then(|bytes| decode(&bytes))?;
+    let mut checker = Checker::new(BASE_URL, league_override()).with_pack_file(pack_path()).with_prices(zenith_prices::SOURCE);
+    checker.load_league();
+    let mut last = None;
+    checker.check(&text, None, &|| true, &mut |view| last = Some(view));
+    last
+}
+
 /// The text of a file saved as UTF-8, or as UTF-16 with its byte order mark (what a redirection
 /// in Windows PowerShell writes). The mark is dropped.
 fn decode(bytes: &[u8]) -> Option<String> {

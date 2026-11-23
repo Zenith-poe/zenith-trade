@@ -178,6 +178,9 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
     };
     // Either order: `Synthesised Superior …` too.
     let base = if name.is_none() { base.strip_prefix("Superior ").unwrap_or(base) } else { base };
+    // A viscera of the higher tier is called `Greater Eater of Worlds' Head`: no viscera base
+    // starts with that word.
+    let base = if class == "Viscera" { base.strip_prefix("Greater ").unwrap_or(base) } else { base };
     let (base, vestigial) = match base.strip_prefix("Vestigial ") {
         Some(rest) => (rest, true),
         None => (base, false),

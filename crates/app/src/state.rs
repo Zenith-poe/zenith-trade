@@ -247,6 +247,14 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
     }
     if unique {
         hide_fixed(&mut rows, &mut filters, &mods);
+        // A mod that did not roll is asked for as it is, without a number.
+        if rows.iter().any(|row| row.range.is_some()) {
+            for row in rows.iter().filter(|row| crate::check::is_unique_kind(row) && row.range.is_none()) {
+                if let Some(filter) = row.filter.and_then(|index| filters.get_mut(index)) {
+                    (filter.min, filter.max) = (None, None);
+                }
+            }
+        }
         if let Some(name) = item.name.as_deref().filter(|_| named_unique) {
             mark_variants(&mut rows, &mut filters, &mods, &zenith_data::unique_variants(name));
         }

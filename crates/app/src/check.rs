@@ -1420,6 +1420,18 @@ pub const MAP_CATEGORY: &str = "map";
 /// the name the exchange is asked for. No search request has it.
 const BULK: &str = "bulk";
 
+/// A mod of a unique that has no range while the item gives the ranges of its other mods: its
+/// numbers are the unique's own, not a roll.
+pub fn fixed_unique_mod(check: &Check, row: &Row) -> bool {
+    check.plan == Plan::Unique && is_unique_kind(row) && row.range.is_none() && check.rows.iter().any(|row| row.range.is_some())
+}
+
+/// A mod the unique itself has (`Unique`, `Foulborn Unique`), not a corruption, an enchant or a
+/// craft, whose number matters even without a range.
+pub fn is_unique_kind(row: &Row) -> bool {
+    !row.corruption && row.kind.as_deref().is_some_and(|kind| kind.ends_with("Unique"))
+}
+
 /// The bosses a map can hold, by family: the trade stat of the family, whose option is the boss,
 /// and what the panel calls any of them.
 pub const MAP_BOSSES: [(&str, &str); 2] = [("implicit.stat_2563183002", "Any conqueror"), ("implicit.stat_3624393862", "Any Elder guardian")];

@@ -271,6 +271,11 @@ pub fn shown(check: &Check, target: Target) -> bool {
 /// the room of the fields; so is one of the choices of a stat (an id with `|`), whatever number
 /// its text has.
 pub fn has_fields(check: &Check, row: &crate::check::Row) -> bool {
+    // A mod of a unique that did not roll (the item gives the ranges of the others) is there or
+    // not: no number to ask.
+    if crate::check::fixed_unique_mod(check, row) {
+        return false;
+    }
     let choice = row.filter.and_then(|filter| check.filters.get(filter)).is_some_and(|filter| filter.id.contains('|'));
     row.kind.is_none() || (!choice && row.lines.iter().any(|line| line.chars().any(|c| c.is_ascii_digit())))
 }
