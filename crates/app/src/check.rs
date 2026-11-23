@@ -337,7 +337,7 @@ impl Check {
         // A map shows its very boss on the item view, and any of its family on the base view.
         row.hidden
             || (self.way == Way::Item && is_any_boss(id))
-            || (self.way == Way::Base && !kept_on_base(id) && !(self.item.fractured && row.fractured))
+            || (self.way == Way::Base && !kept_on_base(id) && !(self.item.fractured && row.fractured) && !(is_cluster(&self.item) && row.kind.as_deref() == Some("Enchant")))
     }
 
     /// How many rows the display rules hide.
@@ -679,6 +679,12 @@ pub fn way_set(check: &Check, way: Way) -> (Vec<Filter>, Options) {
     for filter in filters.iter_mut().filter(|filter| kept_on_base(&filter.id)) {
         filter.on = true;
     }
+    // A cluster jewel's base is its enchants: its passives and what they grant stay as asked.
+    if is_cluster(&check.item) {
+        for (filter, default) in filters.iter_mut().zip(&check.defaults).filter(|(filter, _)| filter.id.starts_with("enchant.")) {
+            filter.on = default.on;
+        }
+    }
     for row in check.rows.iter().filter(|row| row.fractured) {
         if let Some(filter) = row.filter.and_then(|index| filters.get_mut(index)) {
             filter.on = true;
@@ -689,7 +695,8 @@ pub fn way_set(check: &Check, way: Way) -> (Vec<Filter>, Options) {
     }
     let options = Options {
         base: matches!(&check.plan, Plan::Gear { base: Some(_), .. }),
-        item_level: check.item.item_level.map(|level| level.min(BASE_LEVEL)),
+        // A cluster jewel at the step its notables change at.
+        item_level: check.item.item_level.map(|level| if is_cluster(&check.item) { cluster_level(level) } else { level.min(BASE_LEVEL) }),
         fractured: check.item.fractured.then_some(true),
         // A base is a base whatever its rarity.
         magic: false,

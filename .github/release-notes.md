@@ -5,6 +5,7 @@
 - A mod over several lines has one bar down all its lines, in the mod's own colour (Foulborn, enchant, influence...), and its mark in their middle.
 - A unique's mod that does not roll (a Foulborn mod, for one) is searched as it is, without a number to fill in.
 - A Greater viscera is searched as its plain base: the trade site does not know the word.
+- A cluster jewel searched as a base keeps its enchants: how many passives, and what the small ones grant.
 
 ## Install
 
