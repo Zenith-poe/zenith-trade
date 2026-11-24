@@ -83,11 +83,21 @@ pub fn foreground_is_game() -> bool {
 /// modifier that is held (Alt+W): see `keys::copy_strokes`. One batch of input is sent at most
 /// and the clipboard is read at most once. Blocks for up to about 350 ms.
 pub fn copy_hovered_item() -> Result<String, CopyError> {
+    copy_with(keys::copy_strokes)
+}
+
+/// The same with the game's advanced copy (Ctrl+Alt+C): each mod also says its prefix or suffix
+/// and its tier.
+pub fn copy_hovered_item_advanced() -> Result<String, CopyError> {
+    copy_with(keys::advanced_copy_strokes)
+}
+
+fn copy_with(strokes: fn(&[u16]) -> Vec<keys::Stroke>) -> Result<String, CopyError> {
     if !foreground_is_game() {
         return Err(CopyError::GameNotForeground);
     }
     let before = unsafe { GetClipboardSequenceNumber() };
-    if !send(&keys::copy_strokes(&held_modifiers())) {
+    if !send(&strokes(&held_modifiers())) {
         return Err(CopyError::Timeout);
     }
     let deadline = Instant::now() + COPY_WAIT;

@@ -1,2 +1,5 @@
 target/
 *.log
+*.woff
+*.ttf
+!crates/app/assets/fonts/*.ttf

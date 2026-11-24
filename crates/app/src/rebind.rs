@@ -71,6 +71,7 @@ pub struct Draft {
     pub wiki: Option<Combo>,
     pub settings: Option<Combo>,
     pub map_mods: Option<Combo>,
+    pub craft_odds: Option<Combo>,
     pub commands: Vec<DraftCommand>,
     pub searches: Vec<DraftSearch>,
 }
@@ -82,6 +83,7 @@ pub struct Conflicts {
     pub wiki: bool,
     pub settings: bool,
     pub map_mods: bool,
+    pub craft_odds: bool,
     pub commands: Vec<bool>,
     pub searches: Vec<bool>,
 }
@@ -93,13 +95,14 @@ impl Draft {
             wiki: hotkeys.wiki,
             settings: hotkeys.settings,
             map_mods: hotkeys.map_mods,
+            craft_odds: hotkeys.craft_odds,
             commands: hotkeys.commands.iter().map(|c| DraftCommand { keys: Some(c.keys), text: c.text.clone(), send: c.send }).collect(),
             searches: hotkeys.searches.iter().map(|s| DraftSearch { name: s.name.clone(), text: s.text.clone(), keys: s.keys }).collect(),
         }
     }
 
     pub fn conflicts(&self) -> Conflicts {
-        let all: Vec<Option<Combo>> = [self.price_check, self.wiki, self.settings, self.map_mods]
+        let all: Vec<Option<Combo>> = [self.price_check, self.wiki, self.settings, self.map_mods, self.craft_odds]
             .into_iter()
             .chain(self.commands.iter().map(|c| c.keys))
             .chain(self.searches.iter().map(|s| s.keys))
@@ -111,14 +114,15 @@ impl Draft {
             wiki: clash(1),
             settings: clash(2),
             map_mods: clash(3),
-            commands: (0..commands).map(|at| clash(at + 4)).collect(),
-            searches: (0..self.searches.len()).map(|at| clash(at + 4 + commands)).collect(),
+            craft_odds: clash(4),
+            commands: (0..commands).map(|at| clash(at + 5)).collect(),
+            searches: (0..self.searches.len()).map(|at| clash(at + 5 + commands)).collect(),
         }
     }
 
     pub fn has_conflict(&self) -> bool {
         let c = self.conflicts();
-        c.price_check || c.wiki || c.settings || c.map_mods || c.commands.contains(&true) || c.searches.contains(&true)
+        c.price_check || c.wiki || c.settings || c.map_mods || c.craft_odds || c.commands.contains(&true) || c.searches.contains(&true)
     }
 
     /// What is kept: nothing while two bindings clash or the price check has no keys. A command
@@ -140,6 +144,6 @@ impl Draft {
             .filter(|s| is_command_text(&s.text))
             .map(|s| Search { name: s.name.trim().to_owned(), text: s.text.clone(), keys: s.keys })
             .collect();
-        Some(Hotkeys { price_check: self.price_check?, wiki: self.wiki, settings: self.settings, map_mods: self.map_mods, commands, searches })
+        Some(Hotkeys { price_check: self.price_check?, wiki: self.wiki, settings: self.settings, map_mods: self.map_mods, craft_odds: self.craft_odds, commands, searches })
     }
 }

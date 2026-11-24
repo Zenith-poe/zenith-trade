@@ -37,8 +37,10 @@ use eframe::egui::{
 use zenith_core::{Item, Rarity};
 #[path = "icons.rs"]
 pub mod icons;
+pub mod card;
 
 use zenith_trade::Listing;
+use zenith_trade::client::ListedItem;
 use zenith_trade::client::Budget;
 
 use crate::check::{Action, Again, Check, Chip, Choice, ItemOption, Mark, Outcome, Plan, SETTINGS, Setting, WAYS, Way, again, choices, cycle, rolls};
@@ -192,6 +194,16 @@ pub fn install_fonts(ctx: &egui::Context) {
         .insert(FontFamily::Proportional, vec![FONTS[0].0.to_owned()]);
     defs.families
         .insert(FontFamily::Monospace, vec![FONTS[0].0.to_owned()]);
+    // The game's tooltip font, fetched at run time (see fontin.rs); the others follow it for the
+    // glyphs it lacks.
+    if let Some(bytes) = crate::fontin::sfnt() {
+        let mut data = egui::FontData::from_owned(bytes.to_vec());
+        data.tweak.hinting = Some(false);
+        defs.font_data.insert("fontin".to_owned(), Arc::new(data));
+        let mut chain = vec!["fontin".to_owned()];
+        chain.extend(FONTS.iter().map(|(name, _)| (*name).to_owned()));
+        defs.families.insert(crate::fontin::family(), chain);
+    }
     ctx.set_fonts(defs);
 }
 
@@ -730,9 +742,36 @@ pub struct Painted {
     pub tracks: Vec<Track>,
     /// Where the open menu is.
     pub menu: Option<Rect>,
+    /// The listings while "Items" is on and the pointer is over their table.
+    pub cards: Option<Cards>,
 }
 
-/// What the panel reports of a frame.
+/// The listings of the table while "Items" is on and the pointer is over it.
+pub struct Cards {
+    /// The row under the pointer, when its listing has an item.
+    pub hovered: Option<(Rect, Box<ListedItem>)>,
+    /// Every item of the table: the room the card wants is the tallest one's.
+    pub items: Vec<Box<ListedItem>>,
+}
+
+/// The room the window gives the card of a listed item, in the window's points.
+///
+/// The window is the plate's size while no card is wanted. Once "Items" is on and the pointer
+/// enters the listings' table, `main` widens the window toward the side of the screen that has
+/// room (right unless the plate is near the work area's right edge), and lengthens it up or
+/// down as far as the tallest card of the table may need inside the work area. The window moves
+/// by as much as it grows to the left or up, and the plate is drawn that much further in
+/// (`plate`): on the screen it stays where it was. The window keeps that size while the
+/// pointer goes from row to row, so a new card is only a new frame, never a resize; it gets
+/// the plate's size back once the pointer leaves the table.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Room {
+    /// The plate's top-left corner in the window.
+    pub plate: egui::Vec2,
+    /// Where the card may go: its width is the card's, its top and bottom the window's, which
+    /// stay inside the work area.
+    pub column: Rect,
+}
 pub struct Shown {
     /// What the player clicked, in order.
     pub actions: Vec<Action>,
@@ -760,6 +799,9 @@ pub struct Shown {
     pub drag: Option<Drag>,
     /// A slider was released in this frame: what that is.
     pub slid: Option<Action>,
+    /// The pointer is over the listings with "Items" on: the window is to give a card room.
+    /// While it has none yet, the tallest card's height, shadow included.
+    pub card_room: Option<f32>,
 }
 
 /// A budget for laying the panel out when the real one does not matter.
@@ -778,13 +820,37 @@ pub fn measure(ctx: &egui::Context, view: &View, now: i64) -> f32 {
 /// `now`, in seconds since 1970, is what the age of a listing is counted from. `beat`, in
 /// seconds, is where the bars of a view that is loading are in their pulse: it is for the caller
 /// to repaint while they are to move. `budget` is how many searches may be sent now.
-pub fn show(ui: &mut egui::Ui, view: &View, face: &Face<'_>, now: i64, beat: f32, budget: Budget) -> Shown {
+/// `room`: where the card of a listed item goes while the window is widened for it.
+#[allow(clippy::too_many_arguments)]
+pub fn show(ui: &mut egui::Ui, view: &View, face: &Face<'_>, now: i64, beat: f32, budget: Budget, room: Option<Room>) -> Shown {
     // Not clipped to the screen egui knows: when a view made the window taller in this very
     // pass, egui learns the new size only with the next one.
     let painter = ui.painter().with_clip_rect(Rect::EVERYTHING);
     let pointer = ui.input(|input| input.pointer.hover_pos());
-    let Painted { zones, fields, pins, chips, tracks, menu, .. } =
-        lay(ui.ctx(), Some(&painter), ui.max_rect().min, view, face, now, beat, budget, pointer);
+    let corner = ui.max_rect().min;
+    let Painted { zones, fields, pins, chips, tracks, menu, cards, .. } =
+        lay(ui.ctx(), Some(&painter), corner + room.map_or(egui::Vec2::ZERO, |room| room.plate), view, face, now, beat, budget, pointer);
+    // The card of the listing under the pointer, over everything, in the room the window gave.
+    let mut card_room = None;
+    if let Some(cards) = cards {
+        let ppp = ui.ctx().pixels_per_point();
+        let hair = (ppp.floor().max(1.0)) / ppp;
+        let pen = Pen { ctx: ui.ctx(), p: Some(&painter), o: corner.to_vec2(), hair, ppp };
+        card_room = Some(match room {
+            Some(_) => 0.0,
+            // The advanced look is the taller one: the room is made for it.
+            None => cards.items.iter().map(|item| card::height(&pen, item, true)).fold(0.0, f32::max),
+        });
+        if let (Some(room), Some((row, item))) = (room, cards.hovered) {
+            // Alt is polled every frame; the game has the focus, so a repaint every 50 ms keeps the
+            // switch instant.
+            let advanced = card::alt_held();
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            let h = card::height(&pen, &item, advanced);
+            let top = (row.top() - corner.y).min(room.column.bottom() - h).max(room.column.top());
+            card::draw(&pen, &item, room.column.left(), top, advanced);
+        }
+    }
 
     let mut actions = Vec::new();
     // The lines of a menu are not the zones that were there before it opened: a press on one
@@ -852,7 +918,7 @@ pub fn show(ui: &mut egui::Ui, view: &View, face: &Face<'_>, now: i64, beat: f32
     // The wheel anywhere else does nothing.
     let wheel = over.or(over_track).filter(|_| turned != 0.0).map(|target| (target, turned));
     let any_wheel = pointer.filter(|at| over_any(&zones, *at)).filter(|_| turned != 0.0).map(|_| turned);
-    Shown { actions, zones, fields, press, wheel, any_wheel, pins, pinned, chips, context, menu, tracks, drag, slid }
+    Shown { actions, zones, fields, press, wheel, any_wheel, pins, pinned, chips, context, menu, tracks, drag, slid, card_room }
 }
 
 /// Sizes of one layout pass.
@@ -950,6 +1016,7 @@ fn lay(
     let slots = p.map(|p| (p.add(Shape::Noop), p.add(Shape::Noop), p.add(Shape::Noop), p.add(Shape::Noop)));
     // The quick menu with its saved searches open: two plates, the gap between them clear.
     let mut split = None;
+    let mut cards = None;
 
     let mut y = match view {
         View::Message(text) => sentence(&pen, &frame, text, 12.0) + 2.0,
@@ -1019,8 +1086,23 @@ fn lay(
                 let fit = fitting(MAX_HEIGHT - (y + TABLE_HEAD) - under, kept.len());
                 // Listings that no longer answer the filters step back.
                 let shown = if check.stale { STALE } else { 1.0 };
-                hidden_switch(&pen, &frame, y, check, &mut touch);
-                y = table(&pen, &frame, y, &kept[..fit], check.item.corrupted, check.item.rarity == Rarity::Gem, *loading, now, beat, shown);
+                let switch = hidden_switch(&pen, &frame, y, check, &mut touch);
+                let listed = &kept[..fit];
+                let with_items = listed.iter().any(|listing| listing.item.is_some());
+                if with_items {
+                    items_switch(&pen, y, switch, face.pins.item_cards, &mut touch);
+                }
+                let top = y;
+                y = table(&pen, &frame, y, listed, check.item.corrupted, check.item.rarity == Rarity::Gem, *loading, now, beat, shown);
+                // Over the table with "Items" on: the item of the row under the pointer.
+                if with_items && face.pins.item_cards && touch.over(pen.r(0.0, top, WIDTH, y - top)) {
+                    let rows = top + TABLE_HEAD;
+                    let hovered = listed.iter().enumerate().find_map(|(at, listing)| {
+                        let row = pen.r(0.0, rows + at as f32 * LISTING, WIDTH, LISTING);
+                        touch.over(row).then(|| listing.item.clone().map(|item| (row, item))).flatten()
+                    });
+                    cards = Some(Cards { hovered, items: listed.iter().filter_map(|listing| listing.item.clone()).collect() });
+                }
                 if aside > 0 {
                     y = sentence(&pen, &frame, &aside_text, y + 2.0) + 2.0;
                 }
@@ -1128,7 +1210,7 @@ fn lay(
             );
         }
     }
-    Painted { height, zones: touch.zones, fields: touch.fields, pins: touch.pins, chips: touch.chips, tracks: touch.tracks, menu: open }
+    Painted { height, zones: touch.zones, fields: touch.fields, pins: touch.pins, chips: touch.chips, tracks: touch.tracks, menu: open, cards }
 }
 
 /// An unidentified unique whose pick is still to come: the picker takes the place of the price.
@@ -2957,10 +3039,11 @@ const NINJA_UP: Color32 = Color32::from_rgb(0x7B, 0xC0, 0x8A);
 
 /// The switch for the rows a display rule hides, at the right of the listings' header: only there
 /// when some are hidden.
-fn hidden_switch(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, touch: &mut Touch) {
+/// Gives where it starts, or the frame's right edge when it is not there.
+fn hidden_switch(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, touch: &mut Touch) -> f32 {
     let count = check.hidden_count();
     if count == 0 {
-        return;
+        return frame.right;
     }
     let label = pen.t(&state::hidden_label(count), F::T400, 12.0, if check.reveal { tone_star() } else { tone_mute() });
     let cy = y + 1.0 + 6.0 - 1.0 + 10.0;
@@ -2971,6 +3054,29 @@ fn hidden_switch(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, touch: &mu
     pen.fill(track, cy - 6.0, 22.0, 12.0, 6, if check.reveal { tone_gold() } else { tone_line() });
     pen.dot(track + if check.reveal { 16.0 } else { 6.0 }, cy, 8.0, if check.reveal { tone_night() } else { tone_mute() });
     touch.zone(pen.r(x - 4.0, cy - 10.0, width + 4.0, 20.0), Action::ToggleHidden);
+    x - 12.0
+}
+
+/// "Items", a small token of the listings' header that ends at `right`: on, hovering a listing
+/// shows its item beside the panel. Only there when some listing came with its item.
+fn items_switch(pen: &Pen<'_>, y: f32, right: f32, on: bool, touch: &mut Touch) {
+    const H: f32 = 20.0;
+    let label = pen.t("Items", F::T400, 12.0, tone_mute());
+    let width = pen.hair + 8.0 + label.w + 8.0 + pen.hair;
+    let x = right - width;
+    let top = y + 1.0 + 6.0 - 1.0;
+    let rect = pen.r(x, top, width, H);
+    let over = touch.over(rect);
+    // As the chips of the options: `.opt`, its `:hover`, `[data-on]`.
+    let (border, colour) = match (on, over) {
+        (true, false) => (tone_gold(), tone_star()),
+        (true, true) => (tone_gold_hi(), tone_star()),
+        (false, true) => (tone_line(), tone_star()),
+        (false, false) => (tone_hair(), tone_mute()),
+    };
+    pen.boxed(rect, 10, Color32::TRANSPARENT, border);
+    pen.draw(&pen.t("Items", F::T400, 12.0, colour), x + pen.hair + 8.0, top + pen.bl(12.0, H));
+    touch.zone(rect, Action::ToggleItemCards);
 }
 
 /// How much of its colour a cached price keeps: it is not the listings' estimate yet.
@@ -3182,13 +3288,18 @@ fn table(
     // A gem has its level and quality between the price and the date.
     let c_level = edge + 92.0;
     let c_quality = c_level + 36.0;
-    let c_since = if gem { c_quality + 46.0 } else { edge + 92.0 };
+    // A Facetor's Lens has the experience it holds there.
+    let xp = listings.iter().any(|listing| listing.stored_experience.is_some());
+    let c_since = if gem { c_quality + 46.0 } else if xp { c_level + 56.0 } else { edge + 92.0 };
     let c_seller = c_since + 70.0;
     let hb = y - 1.0 + pen.bl(12.0, 20.0);
     pen.draw(&pen.t("Price", F::T400, 12.0, tone_mute()), edge, hb);
     if gem {
         pen.draw(&pen.t("Level", F::T400, 12.0, tone_mute()), c_level, hb);
         pen.draw(&pen.t("Quality", F::T400, 12.0, tone_mute()), c_quality, hb);
+    }
+    if xp {
+        pen.draw(&pen.t("XP", F::T400, 12.0, tone_mute()), c_level, hb);
     }
     pen.draw(&pen.t("Listed", F::T400, 12.0, tone_mute()), c_since, hb);
     pen.draw(&pen.t("Seller", F::T400, 12.0, tone_mute()), c_seller, hb);
@@ -3213,6 +3324,10 @@ fn table(
             let (level, quality) = (listing.gem_level.map(|n| n.to_string()), listing.quality.map(|n| format!("{n}%")));
             pen.draw(&pen.t(level.as_deref().unwrap_or("-"), F::T400, 13.0, dim(tone_star())), c_level, b);
             pen.draw(&pen.t(quality.as_deref().unwrap_or("-"), F::T400, 13.0, dim(tone_star())), c_quality, b);
+        }
+        if xp {
+            let stored = listing.stored_experience.map(zenith_core::short_number);
+            pen.draw(&pen.t(stored.as_deref().unwrap_or("-"), F::T400, 13.0, dim(tone_star())), c_level, b);
         }
         let since = state::listed_since(&listing.indexed, now);
         pen.draw(&pen.t(&since, F::T400, 13.0, dim(tone_mute())), c_since, b);

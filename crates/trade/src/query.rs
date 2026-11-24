@@ -65,6 +65,8 @@ pub struct SearchOptions {
     pub mutated: Option<bool>,
     /// Keep vestigial listings only, or only those that are not; `None` for both.
     pub vestigial: Option<bool>,
+    /// Imbued gems only, or only those that are not; `None` for both.
+    pub imbued: Option<bool>,
 }
 
 impl Default for SearchOptions {
@@ -80,6 +82,7 @@ impl Default for SearchOptions {
             identified: None,
             mutated: None,
             vestigial: None,
+            imbued: None,
         }
     }
 }
@@ -187,6 +190,7 @@ pub fn gem_request(
     disc: Option<&str>,
     level_min: Option<u32>,
     quality_min: Option<u32>,
+    stats: &[Stat],
     opts: &SearchOptions,
 ) -> Value {
     let mut misc = Map::new();
@@ -204,7 +208,7 @@ pub fn gem_request(
         "query": {
             "status": { "option": opts.status },
             "type": kind,
-            "stats": [{ "type": "and", "filters": [] }],
+            "stats": [{ "type": "and", "filters": stat_filters(stats) }],
             "filters": filters
         },
         "sort": { "price": "asc" }
@@ -247,6 +251,8 @@ pub struct GearSearch<'a> {
     pub block_max: Option<u32>,
     /// The least percentile of the defence in the range of its base type.
     pub base_percentile_min: Option<u32>,
+    /// The least experience stored in a Facetor's Lens.
+    pub stored_experience_min: Option<u64>,
     /// A map's tier, exactly; and the least of what it adds, in percent.
     pub map_tier: Option<u32>,
     pub map_bonus_min: Option<u32>,
@@ -308,6 +314,9 @@ pub fn gear_request(search: &GearSearch<'_>, opts: &SearchOptions) -> Value {
     add_range(&mut misc, "quality", search.quality_min, search.quality_max);
     if let Some(fractured) = search.fractured {
         misc.insert("fractured_item".into(), yes_or_no(fractured));
+    }
+    if let Some(xp) = search.stored_experience_min {
+        misc.insert("stored_experience".into(), json!({ "min": xp }));
     }
     misc.extend(misc_filters(opts));
 
@@ -396,6 +405,11 @@ fn stat_filters(stats: &[Stat]) -> Vec<Value> {
     stats
         .iter()
         .map(|(id, min, max)| {
+            // An imbued gem's support: the site lists one stat per gem, the `|` part of the id,
+            // and asks it without a value.
+            if id.starts_with("imbued.") {
+                return json!({ "id": id, "disabled": false });
+            }
             // A stat of options, `implicit.stat_3624393862|4`: the option is the value.
             if let Some((id, option)) = id.split_once('|') {
                 let option: Value = option.parse::<u64>().map_or_else(|_| json!(option), |n| json!(n));
@@ -442,6 +456,7 @@ fn misc_filters(opts: &SearchOptions) -> Map<String, Value> {
         ("identified", opts.identified),
         ("mutated", opts.mutated),
         ("vestigial", opts.vestigial),
+        ("gem_imbued", opts.imbued),
     ] {
         if let Some(value) = value {
             misc.insert(id.into(), yes_or_no(value));

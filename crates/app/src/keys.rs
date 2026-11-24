@@ -178,6 +178,23 @@ pub fn copy_strokes(held: &[u16]) -> Vec<Stroke> {
     out
 }
 
+/// The same for the game's advanced copy, Ctrl+Alt+C, which also says each mod's prefix or
+/// suffix and tier. A Ctrl or an Alt the player holds is used as it is; any other modifier is
+/// released first; what is pressed here is released here, the last pressed first.
+pub fn advanced_copy_strokes(held: &[u16]) -> Vec<Stroke> {
+    let is_alt = |vk: u16| vk == VK_LMENU || vk == VK_RMENU;
+    let mut out: Vec<Stroke> = held.iter().copied().filter(|vk| !is_ctrl(*vk) && !is_alt(*vk)).map(up).collect();
+    let pressed: Vec<u16> = [(VK_LCONTROL, held.iter().copied().any(is_ctrl)), (VK_LMENU, held.iter().copied().any(is_alt))]
+        .into_iter()
+        .filter(|(_, held)| !held)
+        .map(|(vk, _)| vk)
+        .collect();
+    out.extend(pressed.iter().copied().map(down));
+    out.extend([down(VK_C), up(VK_C)]);
+    out.extend(pressed.iter().rev().copied().map(up));
+    out
+}
+
 /// The releases owed after only the first strokes of a batch went in: one for each key they
 /// left down, the last pressed first. A key that was only released (a modifier of the player's)
 /// is owed nothing.
@@ -195,6 +212,38 @@ pub fn left_down(sent: &[Stroke]) -> Vec<Stroke> {
 
 /// Where the pages of the wiki are.
 const WIKI: &str = "https://www.poewiki.net/wiki/";
+
+/// Where PoE Kit's Craft odds is.
+const CRAFT_ODDS: &str = "https://poekit.byfsl.dev/tools/craft-odds#z=";
+
+/// Whether Craft odds can do something with the item: a normal, magic or rare item that is not a
+/// map or one of its kin (fragments, heists, sanctums, memories, logbooks).
+pub fn craft_odds_takes(item: &Item) -> bool {
+    matches!(item.rarity, Rarity::Normal | Rarity::Magic | Rarity::Rare)
+        && !["Map", "Heist", "Contract", "Blueprint", "Sanctum", "Memor", "Logbook"].iter().any(|kin| item.class.contains(kin))
+}
+
+const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// The page of Craft odds that opens on the item's text: the text compressed (raw DEFLATE) and
+/// in base64url after `#z=`. Being after the `#`, it never leaves the player's browser.
+pub fn craft_odds_url(text: &str) -> String {
+    let packed = miniz_oxide::deflate::compress_to_vec(text.as_bytes(), 9);
+    let mut url = String::from(CRAFT_ODDS);
+    for chunk in packed.chunks(3) {
+        let bits = chunk.iter().enumerate().fold(0u32, |bits, (at, byte)| bits | u32::from(*byte) << (16 - 8 * at));
+        for at in 0..=chunk.len() {
+            url.push(char::from(BASE64URL[(bits >> (18 - 6 * at) & 63) as usize]));
+        }
+    }
+    url
+}
+
+/// Whether `url` is a page of Craft odds as `craft_odds_url` writes one and nothing else.
+pub fn is_craft_odds_url(url: &str) -> bool {
+    url.strip_prefix(CRAFT_ODDS)
+        .is_some_and(|data| !data.is_empty() && data.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+}
 
 /// What the wiki calls the item: a unique by its name, anything else by its base type. The only
 /// line of a magic item holds its affixes too: its base is the longest base of the pack that the

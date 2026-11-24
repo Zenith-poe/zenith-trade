@@ -48,6 +48,8 @@ pub const BLOCK: &str = "block";
 /// Where the defence of a piece of armour lies in the range of its base type, in percent.
 pub const BASE_PERCENTILE: &str = "base_percentile";
 /// What a map adds: atlas drops, item rarity, pack size, item quantity.
+/// A Facetor's Lens's stored experience: the site's own filter id (`misc_filters`).
+pub const STORED_EXPERIENCE: &str = "stored_experience";
 pub const MAP_BONUS: &str = "map_bonus";
 pub const MAP_RARITY: &str = "map_iir";
 pub const MAP_PACK_SIZE: &str = "map_packsize";
@@ -145,6 +147,14 @@ pub fn hybrid_partners(id: &str) -> &'static [&'static str] {
     }
 }
 
+/// The filter of an imbued gem's built-in support: the `imbued` group lists one option stat per
+/// support gem, under the line as the game writes it.
+pub fn imbued_filter(item: &crate::item::Item, stats: &Stats) -> Option<Filter> {
+    let line = crate::item::imbued_support(item)?;
+    let id = stats.get("imbued")?.get(line)?.first()?.clone();
+    Some(Filter { id, min: None, max: None, on: true, label: line.to_owned(), tier: None })
+}
+
 pub fn match_mod(m: &Mod, local: Local, stats: &Stats) -> Matched {
     let label = label(m);
     let found = stats
@@ -226,6 +236,9 @@ pub fn default_filters(
     let affix_count = mods.iter().filter(|m| matches!(m.kind, ModKind::Prefix | ModKind::Suffix)).count();
     let affixes = (is_map && affix_count >= 8).then_some(affix_count as f64);
     let properties = [
+        // A Facetor's Lens is asked for 90% of the experience it holds, and no less, counted in
+        // millions so that the field stays short: 315 for 315,000,000.
+        (STORED_EXPERIENCE, "Stored experience", props.stored_experience.map(|xp| (xp as f64 * 0.9 / 100_000.0).floor() / 10.0), true),
         (ARMOUR, "Armour", whole(props.armour_q20()), true),
         (EVASION, "Evasion", whole(props.evasion_q20()), true),
         (
@@ -286,7 +299,9 @@ pub fn default_filters(
                 min: Some(value),
                 max: None,
                 on,
-                label: if id == BLOCK {
+                label: if id == STORED_EXPERIENCE {
+                    format!("{name} {}", crate::props::short_number(props.stored_experience.unwrap_or(0)))
+                } else if id == BLOCK {
                     format!("{name} {value}%")
                 } else if MAP_PERCENTS.contains(&id) {
                     format!("{name} +{value}%")
@@ -701,7 +716,29 @@ fn wordings(text: &str) -> Vec<(String, Turn)> {
     if text.contains("Added Passive Skill is a Jewel Socket") {
         wordings.push((text.replace("Added Passive Skill is a Jewel Socket", "Added Passive Skills are Jewel Sockets"), Turn::Kept));
     }
+    wordings.extend(counted_nouns(text).into_iter().map(|text| (text, Turn::Kept)));
     wordings
+}
+
+/// `# Charges` as `# Charge`, and `# Charge` as `# Charges`: the game writes the word after a
+/// number in the plural or not as the number calls for, where the lists have one of the two
+/// (`Utility Flasks gain # Charge every 3 seconds`). One wording per such word.
+fn counted_nouns(text: &str) -> Vec<String> {
+    text.match_indices("# ")
+        .filter_map(|(at, _)| {
+            let start = at + 2;
+            let end = text[start..].find(|c: char| !c.is_alphabetic()).map_or(text.len(), |len| start + len);
+            let word = &text[start..end];
+            if word.len() < 3 || !word.starts_with(char::is_uppercase) {
+                return None;
+            }
+            let turned = match word.strip_suffix('s') {
+                Some(one) => one.to_owned(),
+                None => format!("{word}s"),
+            };
+            Some(format!("{}{turned}{}", &text[..start], &text[end..]))
+        })
+        .collect()
 }
 
 /// `text` with its first `-#` written `+#`. The lists write a sign as `+`, at the start as

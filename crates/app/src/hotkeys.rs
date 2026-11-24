@@ -125,6 +125,8 @@ pub struct Hotkeys {
     pub settings: Option<Combo>,
     /// Opens the panel on a map, with the player's tags on its mods.
     pub map_mods: Option<Combo>,
+    /// Opens the item under the cursor in PoE Kit's Craft odds.
+    pub craft_odds: Option<Combo>,
     pub commands: Vec<Command>,
     /// Saved searches for the game's search boxes, each on its key when it has one.
     pub searches: Vec<Search>,
@@ -140,6 +142,9 @@ const SETTINGS: Combo = Combo { ctrl: false, alt: false, shift: true, key: VK_SP
 /// The map mods key when nothing says another: Alt + D.
 const MAP_MODS: Combo = Combo { ctrl: false, alt: true, shift: false, key: b'D' as u16 };
 
+/// The Craft odds key when nothing says another: Ctrl + X.
+const CRAFT_ODDS: Combo = Combo::ctrl('X');
+
 /// More commands than anyone has keys for: what a file is read up to.
 const MOST_COMMANDS: usize = 48;
 use crate::stashsearch::{MOST_SEARCHES, Search};
@@ -152,6 +157,7 @@ impl Default for Hotkeys {
             wiki: Some(WIKI),
             settings: Some(SETTINGS),
             map_mods: Some(MAP_MODS),
+            craft_odds: Some(CRAFT_ODDS),
             commands: vec![Command { keys: Combo::plain(VK_F1 + 4), text: "/hideout".into(), send: true }],
             searches: Vec::new(),
         }
@@ -272,7 +278,21 @@ impl Hotkeys {
                 Err(why) => odd.push(format!("searches, entry {}: {why}; left out", index + 1)),
             }
         }
-        (Self { price_check, wiki, settings, map_mods, commands, searches }, odd)
+        // Claimed last, so that keys a player gave to a command or a search stay theirs: the
+        // built-in Ctrl + X then simply goes.
+        let craft_odds = match part("craft_odds") {
+            None => built_in.craft_odds.and_then(|combo| claim(combo, "Craft odds").ok()),
+            Some(Value::Null) => None,
+            Some(Value::String(text)) if text.trim().is_empty() => None,
+            Some(value) => value
+                .as_str()
+                .ok_or_else(|| format!("{value} is not a text"))
+                .and_then(Combo::parse)
+                .and_then(|combo| claim(combo, "Craft odds"))
+                .map_err(|why| odd.push(format!("craft_odds: {why}; there is no Craft odds key")))
+                .ok(),
+        };
+        (Self { price_check, wiki, settings, map_mods, craft_odds, commands, searches }, odd)
     }
 
     /// The same from the text of the settings file, when there is one that can be read as JSON:
@@ -287,7 +307,7 @@ impl Hotkeys {
         let commands: Vec<Value> =
             self.commands.iter().map(|c| serde_json::json!({ "keys": c.keys.label(), "text": c.text, "send": c.send })).collect();
         let searches: Vec<Value> = self.searches.iter().map(Search::to_value).collect();
-        serde_json::json!({ "price_check": self.price_check.label(), "wiki": self.wiki.map(|w| w.label()), "settings": self.settings.map(|w| w.label()), "map_mods": self.map_mods.map(|w| w.label()), "commands": commands, "searches": searches })
+        serde_json::json!({ "price_check": self.price_check.label(), "wiki": self.wiki.map(|w| w.label()), "settings": self.settings.map(|w| w.label()), "map_mods": self.map_mods.map(|w| w.label()), "craft_odds": self.craft_odds.map(|w| w.label()), "commands": commands, "searches": searches })
     }
 
     /// One line for the log: every key and what it does.
@@ -309,6 +329,9 @@ impl Hotkeys {
         }
         if let Some(keys) = self.map_mods {
             parts.push(format!("{} shows the mods of a map", keys.label()));
+        }
+        if let Some(keys) = self.craft_odds {
+            parts.push(format!("{} opens it in Craft odds", keys.label()));
         }
         if !self.searches.is_empty() {
             parts.push(format!("{} saved searches, {} on a key", self.searches.len(), self.searches.iter().filter(|s| s.keys.is_some()).count()));
@@ -359,6 +382,8 @@ pub enum Purpose {
     Settings,
     /// Shows the mods of the map under the cursor.
     MapMods,
+    /// Opens the item under the cursor in PoE Kit's Craft odds.
+    CraftOdds,
     /// The command at this place of `Hotkeys::commands`.
     Command(usize),
     /// The saved search at this place of `Hotkeys::searches`.
@@ -381,6 +406,7 @@ pub fn wanted(hotkeys: &Hotkeys, front: Front, game_hotkeys: bool) -> Vec<(Purpo
         wanted.extend(hotkeys.commands.iter().enumerate().map(|(index, command)| (Purpose::Command(index), command.keys)));
         wanted.extend(hotkeys.searches.iter().enumerate().filter_map(|(index, search)| search.keys.map(|keys| (Purpose::Search(index), keys))));
         wanted.extend(hotkeys.map_mods.map(|keys| (Purpose::MapMods, keys)));
+        wanted.extend(hotkeys.craft_odds.map(|keys| (Purpose::CraftOdds, keys)));
         wanted.extend(hotkeys.settings.map(|keys| (Purpose::Settings, keys)));
     }
     wanted

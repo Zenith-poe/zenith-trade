@@ -1,7 +1,7 @@
 //! What the panel shows, and the pure decisions around it: the first view of a copied text, the
 //! wording of each problem, the league to search in, and how prices and times are written.
 
-use zenith_core::matching::{BASE_PERCENTILE, at_trade_quality, base_percentile};
+use zenith_core::matching::{BASE_PERCENTILE, at_trade_quality, base_percentile, imbued_filter};
 use zenith_core::{
     Estimate, Filter, Item, Local, Mod, ModKind, Properties, Rarity, Stats, default_filters, estimate, is_pseudo, match_mod, parse_item,
     parse_mods, parse_properties, pseudo_totals, unique_filters,
@@ -184,6 +184,10 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
         }
         add_base_percentile(&mut filters, &mods, &props, &item.base);
         (Plan::Unique, None)
+    } else if item.rarity == Rarity::Gem && item.imbued && stats.is_none() {
+        // The support built into an imbued gem is known from the game data only: wait for it,
+        // or the first search would ask for any gem of the name.
+        (Plan::NeedsData, None)
     } else if item.rarity == Rarity::Gem {
         // By its name; a transfigured gem is its base gem and a discriminator.
         let name = item.name.as_deref().unwrap_or(&item.base);
@@ -192,6 +196,10 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
             Some((base, disc)) => Plan::Gem { name: base.clone(), disc: Some(disc.clone()) },
             None => Plan::Gem { name: name.to_owned(), disc: None },
         };
+        // An imbued gem asks for the support built into it.
+        if let Some(filter) = stats.and_then(|stats| imbued_filter(&item, stats)) {
+            filters.push(filter);
+        }
         (plan, None)
     } else if map {
         match pack {
@@ -211,6 +219,15 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
                     },
                     None => (Plan::Gear { category: crate::check::MAP_CATEGORY.to_owned(), base: Some(item.base.clone()) }, None),
                 }
+            }
+        }
+    } else if props.stored_experience.is_some() && item.rarity == Rarity::Currency {
+        // A Facetor's Lens is searched by its base and the experience it holds, not priced from the lists.
+        match pack {
+            None => (Plan::NeedsData, None),
+            Some(pack) => {
+                filters = default_filters(&mods, &props, Local::None, &pack.stats);
+                (Plan::Exact { category: String::new(), base: Some(item.base.clone()) }, None)
             }
         }
     } else if !gear {
@@ -233,6 +250,32 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
         }
     };
     let mut rows = rows_of(&mods, local, stats, &filters, &props);
+    // The built-in support of an imbued gem: a row of its own, as a mod.
+    if item.imbued {
+        for (index, filter) in filters.iter().enumerate().filter(|(_, filter)| filter.id.starts_with("imbued.")) {
+            rows.push(Row {
+                kind: Some("Imbued".into()),
+                tier: None,
+                roll: None,
+                lines: vec![filter.label.clone()],
+                figure: None,
+                q20: false,
+                id: Some(filter.id.clone()),
+                filter: Some(index),
+                unmatched: false,
+                fractured: false,
+                crafted: false,
+                foulborn: false,
+                origin: None,
+                corruption: false,
+                hidden: false,
+                implicit: false,
+                variant: false,
+                value: None,
+                range: None,
+            });
+        }
+    }
     shorten_cluster(&mut rows);
     // A map is priced by what it adds and its implicits: its other mods wait behind the Hidden
     // switch.
@@ -1440,9 +1483,11 @@ pub fn demo_outcome() -> Outcome {
         corrupted: seller.starts_with("Dunmere"),
         item_level: Some(84),
         gem_level: Some(20),
+        stored_experience: None,
         quality: Some(if indexed.contains("T11:") { 23 } else { 20 }),
         icon: None,
         tiers: Vec::new(),
+        item: None,
     };
     let listings = vec![
         listing(2.5, "2025-01-20T11:46:00Z", "Orvane#0654"),

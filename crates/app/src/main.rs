@@ -124,6 +124,7 @@ const ID_QUIT: i32 = 3;
 const ID_WIKI: i32 = 4;
 const ID_SETTINGS: i32 = 5;
 const ID_MAPS: i32 = 6;
+const ID_CRAFT_ODDS: i32 = 7;
 /// The command at place n of the hotkeys is registered under this number plus n.
 const ID_COMMAND: i32 = 100;
 /// The saved searches' keys, above every command's.
@@ -283,6 +284,7 @@ mod settings;
 mod tray;
 mod update;
 mod copy;
+mod fontin;
 mod field;
 mod hotkeys;
 // Some of its items serve only the developer runs: see the `dev` feature.
@@ -324,6 +326,9 @@ mod dev {
         false
     }
     pub fn keys_while_hidden() -> bool {
+        false
+    }
+    pub fn cards_while_hidden() -> bool {
         false
     }
 }
@@ -754,7 +759,11 @@ fn window_size(hwnd: HWND, view: &View) -> (i32, i32) {
     unsafe {
         let _ = GetWindowRect(hwnd, &mut wr);
     }
-    let (w, h) = (wr.right - wr.left, wr.bottom - wr.top);
+    let (mut w, h) = (wr.right - wr.left, wr.bottom - wr.top);
+    // Widened for a card: the plate's own width says the scale.
+    if let Some(widened) = *WIDENED.lock().unwrap() {
+        w = widened.plate.right - widened.plate.left;
+    }
     let Some(ctx) = CTX.get() else {
         return (w, h);
     };
@@ -773,6 +782,9 @@ fn set_view(view: View) -> (i32, i32) {
 /// up only when it would leave the bottom of the work area. Never activates.
 fn refit(view: View) {
     let hwnd = panel();
+    // A card's room goes first: the plate's own place is what grows. The card comes back with
+    // the next frame if the pointer is still over the listings.
+    narrow();
     let (w, h) = set_view(view);
     unsafe {
         let mut wr = RECT::default();
@@ -785,6 +797,98 @@ fn refit(view: View) {
         let _ = GetMonitorInfoW(MonitorFromPoint(corner, MONITOR_DEFAULTTONEAREST), &mut mi);
         let top = wr.top.min(mi.rcWork.bottom - h).max(mi.rcWork.top);
         let _ = SetWindowPos(hwnd, None, wr.left, top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+// ---- the room of an item's card ------------------------------------------------------------
+
+/// The window widened for the card of a listed item (see `panel::Room`): where the plate is and
+/// where the whole window is, in physical pixels, and when that was done.
+#[derive(Clone, Copy)]
+struct Widened {
+    plate: RECT,
+    window: RECT,
+    at: Instant,
+}
+
+static WIDENED: Mutex<Option<Widened>> = Mutex::new(None);
+
+/// Once widened or narrowed, the window keeps its size this long: the pointer egui knows was
+/// measured from the window's old corner until the next move of the mouse.
+const ROOM_STEADY: Duration = Duration::from_millis(150);
+
+/// The room the window gives a card now, in its points.
+fn card_room() -> Option<panel::Room> {
+    let widened = (*WIDENED.lock().unwrap())?;
+    let (plate, window) = (widened.plate, widened.window);
+    let scale = (plate.right - plate.left) as f32 / panel::WIDTH;
+    let offset = egui::vec2((plate.left - window.left) as f32 / scale, (plate.top - window.top) as f32 / scale);
+    let height = (window.bottom - window.top) as f32 / scale;
+    let left = if window.left < plate.left { 0.0 } else { offset.x + panel::WIDTH + panel::card::CARD_GAP };
+    let column = egui::Rect::from_min_size(egui::pos2(left, 0.0), egui::vec2(panel::card::CARD_W, height));
+    Some(panel::Room { plate: offset, column })
+}
+
+/// Where the window goes to give a card of `tallest` points room beside the plate at `plate`,
+/// inside `work`: to the right of the plate, or to its left when the right has no room; as far
+/// up and down as the card, aligned with a row and kept inside the work area, may need. The
+/// plate does not move on the screen.
+fn widened_rect(plate: RECT, work: RECT, tallest: f32) -> RECT {
+    let scale = (plate.right - plate.left) as f32 / panel::WIDTH;
+    let side = ((panel::card::CARD_W + panel::card::CARD_GAP) * scale).ceil() as i32;
+    let tall = (tallest * scale).ceil() as i32;
+    let (left, right) = if plate.right + side <= work.right || plate.left - work.left < work.right - plate.right {
+        (plate.left, plate.right + side)
+    } else {
+        (plate.left - side, plate.right)
+    };
+    let top = plate.top.min((work.bottom - tall).max(work.top));
+    let bottom = plate.bottom.max((plate.bottom + tall).min(work.bottom));
+    RECT { left, top, right, bottom }
+}
+
+/// Gives the card room: the window grows toward the free side, the plate stays put.
+fn widen(tallest: f32) {
+    let hwnd = panel();
+    let mut plate = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut plate);
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let _ = GetMonitorInfoW(MonitorFromPoint(POINT { x: plate.left, y: plate.top }, MONITOR_DEFAULTTONEAREST), &mut mi);
+        let window = widened_rect(plate, mi.rcWork, tallest);
+        *WIDENED.lock().unwrap() = Some(Widened { plate, window, at: Instant::now() });
+        let _ = SetWindowPos(hwnd, None, window.left, window.top, window.right - window.left, window.bottom - window.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    RESEAT.store(true, SeqCst);
+}
+
+/// The card's room given back: the window is the plate's size and place again.
+fn narrow() {
+    let Some(widened) = WIDENED.lock().unwrap().take() else {
+        return;
+    };
+    let plate = widened.plate;
+    unsafe {
+        let _ = SetWindowPos(panel(), None, plate.left, plate.top, plate.right - plate.left, plate.bottom - plate.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    RESEAT.store(true, SeqCst);
+}
+
+/// The window moved under the pointer: egui is to be told where the pointer is now.
+static RESEAT: AtomicBool = AtomicBool::new(false);
+
+/// What a frame asked of the card's room: given when wanted, taken back when no longer.
+fn card_room_wanted(wanted: Option<f32>) {
+    let widened = *WIDENED.lock().unwrap();
+    match (wanted, widened) {
+        (Some(tallest), None) => widen(tallest),
+        (None, Some(widened)) if widened.at.elapsed() >= ROOM_STEADY => narrow(),
+        (None, Some(_)) => {
+            if let Some(ctx) = CTX.get() {
+                ctx.request_repaint_after(ROOM_STEADY);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -846,6 +950,13 @@ fn show_placed(t0: Instant, view: View, at_top: bool) {
     *MENU.lock().unwrap() = None;
     *SLIDER.lock().unwrap() = None;
     RETURN_TO.store(0, SeqCst);
+    // A card's room from the last show is no more: the window is placed anew at its size.
+    if let Some(widened) = WIDENED.lock().unwrap().take() {
+        let plate = widened.plate;
+        unsafe {
+            let _ = SetWindowPos(hwnd, None, plate.left, plate.top, plate.right - plate.left, plate.bottom - plate.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
     let (w, h) = set_view(view);
     let at = if at_top { place_launcher(w, h) } else { place_sized(w, h) };
     ensure_styles(hwnd);
@@ -888,6 +999,8 @@ fn hide(why: &str) {
         let _ = ShowWindow(panel(), SW_HIDE);
         let _ = UnregisterHotKey(None, ID_ESC);
     }
+    // Hidden first: the plate's size comes back out of sight.
+    narrow();
     VISIBLE.store(false, SeqCst);
     *SHOWN_AT.lock().unwrap() = None;
     *PENDING.lock().unwrap() = None;
@@ -966,6 +1079,7 @@ fn on_hotkey(id: i32) {
         ID_MAPS => check_maps(t0),
         ID_ESC if VISIBLE.load(SeqCst) => escape(),
         ID_WIKI => key_job(t0, KeyJob::Wiki),
+        ID_CRAFT_ODDS => key_job(t0, KeyJob::CraftOdds),
         ID_SETTINGS if VISIBLE.load(SeqCst) => hide("hotkey"),
         ID_SETTINGS => show_launcher(t0),
         id if id >= ID_SEARCH => {
@@ -1005,6 +1119,7 @@ fn hotkey_id(purpose: hotkeys::Purpose) -> i32 {
         hotkeys::Purpose::Wiki => ID_WIKI,
         hotkeys::Purpose::Settings => ID_SETTINGS,
         hotkeys::Purpose::MapMods => ID_MAPS,
+        hotkeys::Purpose::CraftOdds => ID_CRAFT_ODDS,
         hotkeys::Purpose::Command(index) => ID_COMMAND + index as i32,
         hotkeys::Purpose::Search(index) => ID_SEARCH + index as i32,
     }
@@ -1109,6 +1224,7 @@ enum KeyJob {
     Command(hotkeys::Command),
     Search(stashsearch::Search),
     Wiki,
+    CraftOdds,
 }
 
 /// A job that waited longer than this is dropped: the player pressed the key for the game as it
@@ -1156,6 +1272,7 @@ fn key_thread(jobs: Receiver<(Instant, KeyJob)>) {
                 }
             }
             KeyJob::Wiki => wiki(),
+            KeyJob::CraftOdds => craft_odds(),
         }
     }
 }
@@ -1181,6 +1298,31 @@ fn wiki() {
             Err(code) => log!("wiki: could not open {url}: code {code}"),
         },
         _ => log!("wiki: no page for {name:?}"),
+    }
+}
+
+/// The Craft odds key: copies the item under the cursor (the advanced copy, with its tiers) and
+/// opens it in PoE Kit's Craft odds, in the default browser.
+fn craft_odds() {
+    let text = match copy::copy_hovered_item_advanced() {
+        Ok(text) => text,
+        Err(error) => {
+            log!("craft odds: nothing copied: {error:?}");
+            return;
+        }
+    };
+    let Ok(item) = zenith_core::parse_item(&text) else {
+        log!("craft odds: what was copied is not an item");
+        return;
+    };
+    if !keys::craft_odds_takes(&item) {
+        log!("craft odds: nothing to craft on a {:?} of class {}", item.rarity, item.class);
+        return;
+    }
+    let url = keys::craft_odds_url(&text);
+    match shell_open(&url) {
+        Ok(()) => log!("craft odds: opened {} for {} ({} characters)", item.base, item.class, url.len()),
+        Err(code) => log!("craft odds: could not open the page: code {code}"),
     }
 }
 
@@ -1268,6 +1410,23 @@ fn budget_now() -> Budget {
 /// A click or a key in the panel: the check changes, and what follows from it is done here.
 /// Nothing in here activates the panel or sends anything to the game.
 fn act(action: Action, budget: Budget) {
+    // A setting of the panel, not of the check: saved at once.
+    if action == Action::ToggleItemCards {
+        let config = {
+            let mut config = CONFIG.lock().unwrap();
+            config.item_cards = !config.item_cards;
+            *config
+        };
+        log!("item cards {}", if config.item_cards { "on" } else { "off" });
+        save_config(config);
+        if !config.item_cards {
+            narrow();
+        }
+        if let Some(ctx) = CTX.get() {
+            ctx.request_repaint();
+        }
+        return;
+    }
     if matches!(action, Action::Launch(_) | Action::RunSearch(_) | Action::EditSearches) {
         act_menu(action);
         return;
@@ -1679,7 +1838,7 @@ fn open_trade_site(url: &str) {
 /// it with. Only ever an address the trade site's check or the wiki's has accepted: it is
 /// refused here again otherwise, so that no file and no program can be started from here.
 fn shell_open(url: &str) -> Result<(), isize> {
-    if !check::is_trade_url(url) && !keys::is_wiki_url(url) {
+    if !check::is_trade_url(url) && !keys::is_wiki_url(url) && !keys::is_craft_odds_url(url) {
         return Err(0);
     }
     let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1827,9 +1986,20 @@ impl eframe::App for App {
         }
     }
 
-    #[cfg(feature = "dev")]
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        #[cfg(feature = "dev")]
         dev::feed_pending(raw_input);
+        // The window grew or shrank for a card: the pointer egui knows is from its old corner.
+        if RESEAT.swap(false, SeqCst) && !dev::cards_while_hidden() {
+            let (mut cur, mut wr) = (POINT::default(), RECT::default());
+            unsafe {
+                let _ = GetCursorPos(&mut cur);
+                let _ = GetWindowRect(panel(), &mut wr);
+            }
+            let ppp = ctx.pixels_per_point();
+            let at = egui::pos2((cur.x - wr.left) as f32 / ppp, (cur.y - wr.top) as f32 / ppp);
+            raw_input.events.push(egui::Event::PointerMoved(at));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1868,8 +2038,11 @@ impl eframe::App for App {
             let fields = FIELDS.lock().unwrap();
             let face = panel::Face { fields: &fields, pins: *CONFIG.lock().unwrap(), menu, drag: held };
             let searchable = view.check().is_some_and(|check| check.searchable());
-            (panel::show(ui, &view, &face, view_clock(), beat, budget), view.loading(), searchable)
+            (panel::show(ui, &view, &face, view_clock(), beat, budget, card_room()), view.loading(), searchable)
         };
+        if up || dev::cards_while_hidden() {
+            card_room_wanted(shown.card_room);
+        }
         *ZONES.lock().unwrap() = shown.zones;
         *NUM_FIELDS.lock().unwrap() = shown.fields;
         *PIN_ZONES.lock().unwrap() = shown.pins;
@@ -2160,7 +2333,9 @@ fn run() -> eframe::Result {
             log!("window and graphics context created: {}", memory());
             MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, SeqCst);
             let _ = CTX.set(cc.egui_ctx.clone());
+            fontin::preload();
             panel::install_fonts(&cc.egui_ctx);
+            fontin::fetch_if_missing(&cc.egui_ctx);
             // Not the system theme: in light mode egui rasterises text for dark-on-light, which
             // makes pale text on this dark plate thin.
             cc.egui_ctx.set_theme(egui::Theme::Dark);

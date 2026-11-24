@@ -10,7 +10,7 @@
 //! `rolls` gives the values its minimum is set to in one gesture.
 
 use crate::quote::Quote;
-use zenith_core::matching::{MAP_BONUS, MAP_MODIFIERS, MAP_PACK_SIZE, MAP_QUANTITY, MAP_RARITY, map_pseudo};
+use zenith_core::matching::{MAP_BONUS, STORED_EXPERIENCE, MAP_MODIFIERS, MAP_PACK_SIZE, MAP_QUANTITY, MAP_RARITY, map_pseudo};
 use zenith_core::matching::{ARMOUR, BASE_PERCENTILE, ATTACKS_PER_SECOND, BLOCK, CRITICAL_CHANCE, ELEMENTAL_DPS, ENERGY_SHIELD, EVASION, PHYSICAL_DPS, TOTAL_DPS};
 use zenith_core::{Estimate, Filter, Influence, Item, Rarity, gem_level, open_affixes, parse_mods, parse_properties};
 use zenith_trade::client::{BASE_URL, Budget};
@@ -931,6 +931,9 @@ pub enum Action {
     ToggleBase,
     /// Shows or hides again the rows a display rule hides.
     ToggleHidden,
+    /// The "Items" switch: hovering a listing shows its item beside the panel. A setting of the
+    /// panel, saved, not of the check.
+    ToggleItemCards,
     SetItemLevel(Option<u32>),
     SetQuality(Option<u32>),
     SetLinks(Option<u32>),
@@ -1057,6 +1060,7 @@ pub fn apply(check: &mut Check, action: &Action) -> Effect {
             })
         }
         Action::ToggleHidden => check.reveal = !check.reveal,
+        Action::ToggleItemCards => {}
         Action::ToggleBase => {
             // Only a base the site knows can be asked for.
             if matches!(&check.plan, Plan::Gear { base: Some(_), .. } | Plan::Exact { base: Some(_), .. }) {
@@ -1267,6 +1271,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
         identified: chosen.identified,
         mutated: chosen.foulborn,
         vestigial: check.item.vestigial.then_some(true),
+        imbued: check.item.imbued.then_some(true),
     };
     // The unique chosen for an unidentified one: the search of that unique, still unidentified.
     if let (Some(name), Plan::Gear { .. }) = (&check.unique, &check.plan) {
@@ -1274,7 +1279,11 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
     }
     match &check.plan {
         Plan::Nothing | Plan::NeedsData | Plan::Stack => None,
-        Plan::Gem { name, disc } => Some(gem_request(name, disc.as_deref(), chosen.item_level, chosen.quality, &options)),
+        Plan::Gem { name, disc } => {
+            // An imbued gem asks for the support built into it.
+            let stats: Vec<_> = check.filters.iter().filter(|filter| filter.on && !is_property(&filter.id)).map(|filter| (filter.id.clone(), filter.min, filter.max)).collect();
+            Some(gem_request(name, disc.as_deref(), chosen.item_level, chosen.quality, &stats, &options))
+        }
         Plan::Unique => {
             let name = check.item.name.as_deref()?;
             let stats: Vec<_> = check.filters.iter().filter(|filter| filter.on && !is_property(&filter.id)).map(|filter| (filter.id.clone(), filter.min, filter.max)).collect();
@@ -1305,7 +1314,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
             let whole = |bound: Option<f64>| bound.map(|bound| bound.max(0.0) as u32);
             let mut stats = Vec::new();
             let mut search = GearSearch {
-                category: Some(category),
+                category: Some(category.as_str()).filter(|category| !category.is_empty()),
                 base: base.as_deref().filter(|_| chosen.base),
                 rarity_magic: matches!(check.plan, Plan::Gear { .. }) && chosen.magic,
                 rarity_nonunique: matches!(check.plan, Plan::Gear { .. }) && check.item.rarity != Rarity::Unique,
@@ -1330,6 +1339,7 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
                     }
                     BLOCK => (search.block_min, search.block_max) = (whole(filter.min), whole(filter.max)),
                     BASE_PERCENTILE => search.base_percentile_min = whole(filter.min),
+                    STORED_EXPERIENCE => search.stored_experience_min = filter.min.map(|millions| (millions.max(0.0) * 1_000_000.0).round() as u64),
                     MAP_BONUS => search.map_bonus_min = whole(filter.min),
                     MAP_QUANTITY => search.map_quantity_min = whole(filter.min),
                     MAP_RARITY => search.map_rarity_min = whole(filter.min),

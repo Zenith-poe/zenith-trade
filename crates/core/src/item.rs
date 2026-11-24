@@ -126,6 +126,8 @@ pub struct Item {
     /// A vestigial item: its base is named `Vestigial Ursine Pelt`, and it has a vestigial
     /// implicit. The site lists it under its plain base, with a filter of its own.
     pub vestigial: bool,
+    /// A skill gem with an `Imbued` section: a support gem is built into it.
+    pub imbued: bool,
 }
 
 /// The level of a gem: the first `Level:` line, which is the gem itself (the requirements, whose
@@ -133,6 +135,14 @@ pub struct Item {
 pub fn gem_level(item: &Item) -> Option<u32> {
     let value = item.sections.iter().skip(1).flatten().find_map(|line| line.strip_prefix("Level: "))?;
     value.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// The `Supported by Level 1 Multistrike` line of an imbued gem.
+pub fn imbued_support(item: &Item) -> Option<&str> {
+    if !item.imbued {
+        return None;
+    }
+    item.sections.iter().skip(1).flatten().map(|line| line.trim_end()).find(|line| line.starts_with("Supported by Level "))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +156,10 @@ pub enum ParseError {
 }
 
 pub fn parse_item(text: &str) -> Result<Item, ParseError> {
-    let sections = split_sections(text);
+    // The game leaves a zero-width space where a line held a link (`Supported by Level 1
+    // \u{200B}Multistrike`): no list writes one, so none is kept.
+    let text = text.replace(['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'], "");
+    let sections = split_sections(&text);
 
     let mut header = sections[0].iter().map(|line| line.trim_end());
     let class = header
@@ -194,6 +207,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
     let mut influences = Vec::new();
     let mut mirrored = false;
     let mut split = false;
+    let mut imbued = false;
     let mut stack = None;
     for line in sections.iter().skip(1).flatten().map(|line| line.trim_end()) {
         if let Some(value) = line.strip_prefix("Item Level: ") {
@@ -212,6 +226,10 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
             mirrored = true;
         } else if line == "Split" {
             split = true;
+        } else if line == "Imbued" || line.starts_with("Supported by Level ") {
+            // The game's plain copy may leave the `Imbued` line out: the support it names is
+            // enough, as no other gem has one.
+            imbued = true;
         } else if let Some(influence) = Influence::from_line(line)
             && !influences.contains(&influence)
         {
@@ -224,6 +242,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
     }
     influences.sort_by_key(|influence| *influence as u8);
 
+    let imbued = imbued && rarity == Rarity::Gem;
     Ok(Item {
         class: class.to_string(),
         rarity,
@@ -240,6 +259,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
         stack,
         sections,
         vestigial,
+        imbued,
     })
 }
 

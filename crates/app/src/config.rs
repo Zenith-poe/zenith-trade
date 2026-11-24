@@ -26,7 +26,7 @@ use zenith_core::matching::Slack;
 pub const VARIABLE: &str = "ZENITH_CONFIG";
 
 /// The keys of the file that are written from here. Every other key is left as it is.
-const OWN_KEYS: [&str; 9] = ["status", "currency", "listed", "stash_scroll", "map_bulk", "theme", "marker", "league", "default_min"];
+const OWN_KEYS: [&str; 10] = ["status", "currency", "listed", "stash_scroll", "map_bulk", "theme", "marker", "league", "default_min", "item_cards"];
 
 /// How "any" is written for a setting that is pinned to no value at all.
 const ANY: &str = "any";
@@ -80,6 +80,9 @@ pub struct Config {
     /// How far under the item's value a filter's minimum starts; its exact value when the file
     /// says nothing.
     pub slack: Slack,
+    /// Hovering a listing shows its item as the game draws it, beside the panel: the "Items"
+    /// switch of the listings' header. Off when the file says nothing.
+    pub item_cards: bool,
 }
 
 impl Default for Config {
@@ -90,7 +93,7 @@ impl Default for Config {
 
 impl Config {
     /// Nothing pinned, and the stash scroll on: what no file gives.
-    pub const NONE: Self = Self { status: None, currency: None, listed: None, stash_scroll: true, map_bulk: false, theme: Theme::Forge, marker: Marker::Bar, league: None, slack: Slack::Exact };
+    pub const NONE: Self = Self { status: None, currency: None, listed: None, stash_scroll: true, map_bulk: false, theme: Theme::Forge, marker: Marker::Bar, league: None, slack: Slack::Exact, item_cards: false };
 
     pub fn pinned(&self, setting: Setting) -> bool {
         match setting {
@@ -182,6 +185,9 @@ impl Config {
         if self.slack != Slack::Exact {
             pins.insert("default_min".into(), Value::from(self.slack.percent()));
         }
+        if self.item_cards {
+            pins.insert("item_cards".into(), Value::Bool(true));
+        }
         let mut text = serde_json::to_string_pretty(&Value::Object(pins)).unwrap_or_else(|_| "{}".into());
         text.push('\n');
         text
@@ -271,6 +277,11 @@ impl Config {
                 "league" => {
                     config.league = value.as_str().and_then(League::new);
                     config.league.is_some()
+                }
+                // Yes or no; anything else leaves it off.
+                "item_cards" => {
+                    config.item_cards = value.as_bool().unwrap_or(false);
+                    value.is_boolean()
                 }
                 _ => true,
             };

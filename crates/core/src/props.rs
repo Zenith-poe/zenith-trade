@@ -50,6 +50,8 @@ pub struct Properties {
     pub more_scarabs: Option<u32>,
     pub more_currency: Option<u32>,
     pub more_cards: Option<u32>,
+    /// A Facetor's Lens: the experience it holds, as written with any thousands separators.
+    pub stored_experience: Option<u64>,
 }
 
 /// The quality the trade site compares items at.
@@ -166,6 +168,7 @@ pub fn parse_properties(item: &Item) -> Properties {
                 let number = first_word(value).trim_end_matches('%').parse().ok();
                 keep_first(&mut properties.critical_chance, number);
             }
+            "Stored Experience" => keep_first(&mut properties.stored_experience, big_number(value)),
             "Map Tier" => keep_first(&mut properties.map_tier, whole(value)),
             "Atlas Drops" => keep_first(&mut properties.atlas_drops, whole(value)),
             "Item Rarity" => keep_first(&mut properties.item_rarity, whole(value)),
@@ -210,6 +213,30 @@ fn first_word(value: &str) -> &str {
 /// The number of `18`, `18 (augmented)` or `25%`.
 fn whole(value: &str) -> Option<u32> {
     first_word(value).trim_end_matches('%').parse().ok()
+}
+
+/// A number written with dots, commas or spaces between the thousands: `350.000.000`,
+/// `350,000,000`, `350 000 000`, `350000000`. What follows a `(` is not read.
+fn big_number(value: &str) -> Option<u64> {
+    let digits: String = value.split('(').next()?.chars().filter(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// A big number shortened: `350M`, `8.5M`, `1.2B`, `12K`; as it is under a thousand.
+pub fn short_number(value: u64) -> String {
+    let (unit, letter) = match value {
+        1_000_000_000.. => (1_000_000_000.0, "B"),
+        1_000_000.. => (1_000_000.0, "M"),
+        1_000.. => (1_000.0, "K"),
+        _ => return value.to_string(),
+    };
+    let scaled = value as f64 / unit;
+    if scaled < 10.0 {
+        let text = format!("{scaled:.1}");
+        format!("{}{letter}", text.strip_suffix(".0").unwrap_or(&text))
+    } else {
+        format!("{}{letter}", scaled.round() as u64)
+    }
 }
 
 /// The ranges of `8-15` or `10-20 (augmented), 30-50 (augmented)`.

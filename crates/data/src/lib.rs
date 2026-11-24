@@ -32,6 +32,27 @@ pub fn is_legacy_unique(name: &str) -> bool {
     ALL.get_or_init(|| serde_json::from_str(LEGACY_UNIQUES).unwrap_or_default()).contains(name)
 }
 
+/// The tags of the mods, from the RePoE mod data: see `tools/gen-mod-tags.py` and THIRD_PARTY_NOTICES.
+const MOD_TAGS: &str = include_str!("../mod-tags.json");
+
+/// The tags the game's advanced tooltip writes after a mod's name ("defences", "energy_shield"),
+/// by the name the trade site gives, the side, and the mod's level when it has one.
+pub fn mod_tags(name: &str, prefix: bool, level: Option<u32>) -> Option<&'static [String]> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        tags: Vec<String>,
+        mods: std::collections::HashMap<String, Vec<usize>>,
+    }
+    static ALL: std::sync::OnceLock<std::collections::HashMap<String, Vec<String>>> = std::sync::OnceLock::new();
+    let all = ALL.get_or_init(|| {
+        let file: File = serde_json::from_str(MOD_TAGS).unwrap_or(File { tags: Vec::new(), mods: Default::default() });
+        file.mods.into_iter().map(|(key, ids)| (key, ids.into_iter().filter_map(|i| file.tags.get(i).cloned()).collect())).collect()
+    });
+    let side = if prefix { 'p' } else { 's' };
+    let found = level.and_then(|level| all.get(&format!("{name}|{side}|{level}"))).or_else(|| all.get(&format!("{name}|{side}")));
+    found.map(Vec::as_slice)
+}
+
 /// The defence ranges of the bases that have one that rolls, from the RePoE base item data: see
 /// `tools/gen-base-defences.py` and THIRD_PARTY_NOTICES.
 const BASE_DEFENCES: &str = include_str!("../base-defences.json");

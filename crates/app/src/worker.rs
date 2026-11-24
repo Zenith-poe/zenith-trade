@@ -516,6 +516,10 @@ impl Checker {
         self.load_pack();
         self.load_prices();
         let mut view = self.read_view(text, pins, way);
+        if let Some(check) = view.check() {
+            let on: Vec<&str> = check.filters.iter().filter(|filter| filter.on).map(|filter| filter.id.as_str()).collect();
+            log!("read: {:?} {}, {} rows, filters on: {}", check.plan, check.item.base, check.rows.len(), on.join(", "));
+        }
         self.quote = view.check().and_then(|check| check.result.quote.clone());
         emit(Step::Read(view.clone()));
 

@@ -5,7 +5,7 @@ pub mod exchange;
 pub mod limits;
 pub mod query;
 
-pub use client::{Client, Found, Listing, TradeError};
+pub use client::{Affix, Client, Found, ListedItem, ListedMod, ListedModKind, ListedProperty, ListedRarity, Listing, TradeError};
 pub use exchange::{Bulk, Offer, Row};
 pub use limits::{Limiter, Rule, parse_rules};
 pub use query::{

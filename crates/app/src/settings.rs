@@ -363,6 +363,7 @@ enum Slot {
     Wiki,
     Settings,
     MapMods,
+    CraftOdds,
     Command(usize),
     Search(usize),
 }
@@ -517,6 +518,7 @@ impl Window {
                 Slot::Wiki => &mut self.draft.wiki,
                 Slot::Settings => &mut self.draft.settings,
                 Slot::MapMods => &mut self.draft.map_mods,
+                Slot::CraftOdds => &mut self.draft.craft_odds,
                 Slot::Search(at) => match self.draft.searches.get_mut(at) {
                     Some(search) => &mut search.keys,
                     None => {
@@ -567,6 +569,10 @@ impl Window {
         ui.horizontal(|ui| {
             name(ui, "Map mods");
             self.combo_button(ui, Slot::MapMods, self.draft.map_mods, clashes.map_mods);
+        });
+        ui.horizontal(|ui| {
+            name(ui, "Craft odds");
+            self.combo_button(ui, Slot::CraftOdds, self.draft.craft_odds, clashes.craft_odds);
         });
         let mut remove = None;
         for at in 0..self.draft.commands.len() {
