@@ -1057,6 +1057,22 @@ impl Window {
         let at = egui::pos2(bar.left() + 30.0, (bar.center().y - galley.size().y / 2.0).round());
         ui.painter().galley(at, galley, p.star);
         let size = Vec2::splat(30.0);
+        // The version and where the update stands, small, left of the cross; a click on the
+        // action word does what it says.
+        let mut right = bar.right() - size.x - 10.0;
+        if let Some(label) = crate::update::action_label() {
+            let g = ui.painter().layout_job(t(label, 11.5, 500.0, p.gold_hi));
+            let rect = egui::Rect::from_min_size(egui::pos2(right - g.size().x, bar.center().y - g.size().y / 2.0), g.size());
+            let hit = ui.interact(rect.expand(5.0), ui.scope_id().with("update"), egui::Sense::click());
+            let tone = if hit.hovered() { p.star } else { p.gold_hi };
+            ui.painter().galley(rect.min, g, tone);
+            if hit.clicked() && self.shot.is_none() {
+                crate::update::run_action();
+            }
+            right = rect.left() - 10.0;
+        }
+        let g = ui.painter().layout_job(t(&crate::update::status_text(), 11.5, 500.0, p.mute));
+        ui.painter().galley(egui::pos2(right - g.size().x, bar.center().y - g.size().y / 2.0), g, p.mute);
         let cross = egui::Rect::from_min_size(egui::pos2(bar.right() - size.x, bar.center().y - size.y / 2.0), size);
         let hit = ui.interact(cross, ui.scope_id().with("close"), egui::Sense::click());
         if hit.hovered() {

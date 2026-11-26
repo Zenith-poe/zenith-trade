@@ -124,6 +124,28 @@ pub fn parse_mods(item: &Item) -> Vec<Mod> {
     mods
 }
 
+/// The lines of a section without the reminder text the game writes over several lines in
+/// brackets, under a keystone mod: `(You can only have one Herald` ... `Your Aura Skills are
+/// Disabled)`. A reminder on one line is left out by `parse_line`.
+fn without_reminders(section: &[String]) -> Vec<&String> {
+    let mut inside = false;
+    section
+        .iter()
+        .filter(|line| {
+            let text = line.trim();
+            if inside {
+                inside = !text.ends_with(')');
+                return false;
+            }
+            if text.starts_with('(') && !text.ends_with(')') {
+                inside = true;
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
 fn is_brace_line(line: &str) -> bool {
     line.starts_with('{')
 }
@@ -132,7 +154,7 @@ fn is_brace_line(line: &str) -> bool {
 /// no mod; a brace line that no line follows gives no mod.
 fn described_mods(section: &[String], mods: &mut Vec<Mod>) {
     let mut current: Option<Mod> = None;
-    for line in section {
+    for line in without_reminders(section) {
         if let Some(described) = parse_brace_line(line) {
             mods.extend(current.replace(described).filter(has_lines));
         } else if let Some(current) = current.as_mut()
@@ -243,7 +265,7 @@ fn marks_of(section: &[String]) -> Marks {
 
 /// Every line of the section as a mod of its own; with `marked_only`, the marked lines only.
 fn marked_mods(section: &[String], marked_only: bool, mods: &mut Vec<Mod>) {
-    for line in section {
+    for line in without_reminders(section) {
         let Some((line, mark)) = parse_line(line) else {
             continue;
         };

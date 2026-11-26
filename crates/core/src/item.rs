@@ -216,7 +216,7 @@ pub fn parse_item(text: &str) -> Result<Item, ParseError> {
             quality = quality.or_else(|| parse_quality(value));
         } else if let Some(value) = line.strip_prefix("Stack Size: ") {
             stack = stack.or_else(|| parse_stack(value));
-        } else if line == "Corrupted" {
+        } else if line == "Corrupted" || line == "Twice Corrupted" {
             corrupted = true;
         } else if line == "Fractured Item" {
             fractured = true;

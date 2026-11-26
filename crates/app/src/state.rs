@@ -58,8 +58,6 @@ pub enum Step {
     Read(View),
     /// Where the search stands.
     Found(Outcome),
-    /// The search found nothing and was sent again with "Any N" on at this value.
-    Relaxed(u32),
     /// The live bulk offers of a stackable.
     Bulk(Vec<zenith_trade::Bulk>),
 }
@@ -98,11 +96,6 @@ impl View {
             Step::Bulk(bulk) => {
                 if let View::Item(check) = self {
                     check.result.bulk = bulk;
-                }
-            }
-            Step::Relaxed(n) => {
-                if let View::Item(check) = self {
-                    check.any = Some(n);
                 }
             }
             Step::Read(View::Item(read)) => match self {
@@ -209,7 +202,7 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
                 // Elder, the Originator's memories), on as well; its mods are there to switch on.
                 filters = default_filters(&mods, &props, Local::None, &pack.stats);
                 for filter in filters.iter_mut().filter(|filter| !is_property(&filter.id)) {
-                    filter.on = filter.id.starts_with("implicit.");
+                    filter.on = filter.id.starts_with("implicit.") || filter.id.starts_with("enchant.");
                 }
                 // A blighted map is searched as its area, which an older pack does not know.
                 match crate::check::blight_of(&item.base) {
@@ -277,10 +270,10 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
         }
     }
     shorten_cluster(&mut rows);
-    // A map is priced by what it adds and its implicits: its other mods wait behind the Hidden
-    // switch.
+    // A map is priced by what it adds, its implicits and its enchants: its other mods wait behind
+    // the Hidden switch.
     if map {
-        for row in rows.iter_mut().filter(|row| row.kind.is_some() && !row.implicit) {
+        for row in rows.iter_mut().filter(|row| row.kind.is_some() && !row.implicit && row.kind.as_deref() != Some("Enchant")) {
             row.hidden = true;
         }
         any_boss(&mut rows, &mut filters);
@@ -312,7 +305,11 @@ fn read_with(text: &str, pack: Option<&Pack>, pins: &Config, cover: bool) -> Vie
     // An unidentified unique: the uniques of its base are there to choose from.
     if let Some(pack) = pack.filter(|_| unique && !named_unique) {
         let names = pack.uniques_of(&check.item.base);
-        check.offer_uniques(names);
+        // A unique that no longer drops cannot be what a league's unidentified item is: offered
+        // only when the league is Standard, or when nothing else is left.
+        let standard = pins.league.as_ref().is_some_and(|league| league.as_str().contains("Standard"));
+        let dropping: Vec<String> = names.iter().filter(|name| !zenith_data::is_legacy_unique(name)).cloned().collect();
+        check.offer_uniques(if standard || dropping.is_empty() { names } else { dropping });
     }
     pins.apply(&mut check.options);
     check.result.problem = problem.map(str::to_owned);

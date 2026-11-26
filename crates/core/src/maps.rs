@@ -95,7 +95,7 @@ pub fn parse_map(item: &Item) -> Option<MapInfo> {
             } else {
                 index > 1
                     && !line.contains(": ")
-                    && !matches!(line, "Unidentified" | "Corrupted" | "Mirrored" | "Synthesised Item" | "Fractured Item")
+                    && !matches!(line, "Unidentified" | "Corrupted" | "Twice Corrupted" | "Mirrored" | "Synthesised Item" | "Fractured Item")
                     && !line.starts_with("Unidentified (Tier ")
             };
             if wanted {

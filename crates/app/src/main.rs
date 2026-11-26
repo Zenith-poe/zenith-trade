@@ -1427,7 +1427,7 @@ fn act(action: Action, budget: Budget) {
         }
         return;
     }
-    if matches!(action, Action::Launch(_) | Action::RunSearch(_) | Action::EditSearches) {
+    if matches!(action, Action::Launch(_) | Action::RunSearch(_) | Action::EditSearches | Action::UpdateLine) {
         act_menu(action);
         return;
     }
@@ -1500,6 +1500,7 @@ fn act_menu(action: Action) {
             Some(launcher::Target::Settings(page)) => open_settings(page),
             None => {}
         },
+        Action::UpdateLine => update::run_action(),
         Action::EditSearches => open_settings(Some("Stash searches")),
         Action::RunSearch(index) => {
             let search = current_hotkeys().and_then(|keys| keys.searches.get(index).cloned());

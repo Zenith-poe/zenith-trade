@@ -48,6 +48,7 @@ use crate::config::Config;
 use crate::maps::{MapView, Tag};
 use crate::look::{self, Marker};
 use crate::launcher;
+use crate::update;
 use crate::quote;
 use crate::field::{self, Bound, Fields, Target, Typed};
 use crate::slider::{self, Drag, Scale};
@@ -1050,7 +1051,9 @@ fn lay(
                 }
             } else if listings.is_empty() && !loading {
                 // Nothing was priced: the reason takes the place of the price.
-                if let Some(problem) = problem {
+                if problem.as_deref() == Some(state::NO_LISTINGS) {
+                    y = no_listings(&pen, &frame, y + 6.0) + 4.0;
+                } else if let Some(problem) = problem {
                     y = sentence(&pen, &frame, problem, y + 6.0) + 2.0;
                 }
                 // What can be searched again keeps its two ways and its chips: the search may be
@@ -1218,18 +1221,34 @@ fn picking(check: &Check) -> bool {
     check.picking()
 }
 
-/// The candidates as tiles: their picture over their name, four to a row.
+/// Columns and picture side of the picker for `count` candidates: the largest layout whose rows
+/// fit in `room`, from four to a row at 64 px (three or fewer at 84) down to eight at 28; the
+/// last one when none fits. Whatever the item, the panel stays on screen.
+fn picker_layout(count: usize, room: f32, tile_h: impl Fn(f32) -> f32) -> (usize, f32) {
+    const LAYOUTS: [(usize, f32); 5] = [(4, 64.0), (5, 48.0), (6, 40.0), (7, 32.0), (8, 28.0)];
+    if count <= 3 {
+        return (count.max(1), 84.0);
+    }
+    LAYOUTS
+        .iter()
+        .copied()
+        .find(|&(columns, picture)| count.div_ceil(columns) as f32 * tile_h(picture) <= room)
+        .unwrap_or(LAYOUTS[LAYOUTS.len() - 1])
+}
+
+/// The candidates as tiles: their picture over their name, as many to a row as the panel's
+/// height asks.
 fn picker(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, touch: &mut Touch) -> f32 {
     const GAP: f32 = 4.0;
     const MAX_TILE: f32 = 132.0;
-    let columns = check.candidates.len().clamp(1, 4);
-    // Few candidates get a larger picture.
-    let picture: f32 = if columns <= 3 { 84.0 } else { 64.0 };
     const LINE: f32 = 14.0;
     // A unique found in Standard only says so under its name.
     let legacy = |name: &str| zenith_data::is_legacy_unique(name);
     let tag = if check.candidates.iter().any(|name| legacy(name)) { LINE } else { 0.0 };
-    let tile_h = 8.0 + picture + 2.0 + 2.0 * LINE + tag + 8.0;
+    let tile_of = |picture: f32| 8.0 + picture + 2.0 + 2.0 * LINE + tag + 8.0;
+    // The head above and the Close button under it take about 200.
+    let (columns, picture) = picker_layout(check.candidates.len(), MAX_HEIGHT - y - 90.0, tile_of);
+    let tile_h = tile_of(picture);
     let width = frame.right - frame.left;
     let tile_w = ((width - GAP * (columns as f32 - 1.0)) / columns as f32).floor().min(MAX_TILE);
     let top = y + 6.0;
@@ -1449,7 +1468,27 @@ fn launcher_body(pen: &Pen<'_>, frame: &Frame, searches_open: bool, touch: &mut 
         pen.draw(label, x + PAD + ICON + 8.0, y + 7.0 + pen.bl(13.0, 20.0));
         touch.zone(rect, Action::Launch(index));
     }
-    y + HEIGHT
+    version_line(pen, frame, y + HEIGHT + 10.0, touch) + 2.0
+}
+
+/// The small line under the buttons: the version, where the update stands, and its action.
+fn version_line(pen: &Pen<'_>, frame: &Frame, y: f32, touch: &mut Touch) -> f32 {
+    let state = update::state();
+    let tone = if matches!(state, update::State::Ready(_)) { tone_gold() } else { tone_mute() };
+    pen.dot(frame.left + 3.0, y + 8.0, 5.0, tone);
+    let text = pen.t(&update::status_text(), F::T500, 11.5, tone);
+    pen.draw(&text, frame.left + 14.0, y + pen.bl(11.5, 16.0));
+    if let Some(label) = update::action_label() {
+        let link = pen.t(label, F::T500, 11.5, tone_gold_hi());
+        let x = frame.left + 14.0 + text.w + 10.0;
+        let rect = pen.r(x - 6.0, y - 4.0, link.w + 12.0, 24.0);
+        pen.draw(&link, x, y + pen.bl(11.5, 16.0));
+        if touch.over(rect) {
+            pen.fill(x, y + 15.0, link.w, 1.0, 0, tone_gold_hi());
+        }
+        touch.zone(rect, Action::UpdateLine);
+    }
+    y + 16.0
 }
 
 /// A 16px picture, centred on `(cx, cy)`, drawn with a few strokes.
@@ -2861,6 +2900,21 @@ fn sentence_height(pen: &Pen<'_>, frame: &Frame, text: &str) -> f32 {
 }
 
 /// A sentence in lines of 20px starting at `y`. Returns the y under the last one.
+/// A search that found nothing, said plainly enough not to look like a list that failed to come:
+/// a plate with an ember edge, the words, and what to do about it.
+fn no_listings(pen: &Pen<'_>, frame: &Frame, y: f32) -> f32 {
+    let width = frame.right - frame.left;
+    let hint = pen.wrapped("No item for sale has every mod that is on: untick one or try Any N.", F::T400, 12.0, tone_mute(), width - 28.0);
+    let height = 16.0 + 22.0 + 17.0 * hint.len() as f32 + 10.0;
+    pen.fill(frame.left, y, width, height, 8, tone_raise());
+    pen.fill(frame.left, y, 3.0, height, 2, tone_ember());
+    pen.draw(&pen.t("No listings", F::T700, 15.0, tone_ember()), frame.left + 16.0, y + 12.0 + pen.bl(15.0, 22.0));
+    for (i, line) in hint.iter().enumerate() {
+        pen.draw(line, frame.left + 16.0, y + 34.0 + 17.0 * i as f32 + pen.bl(12.0, 17.0));
+    }
+    y + height
+}
+
 fn sentence(pen: &Pen<'_>, frame: &Frame, text: &str, y: f32) -> f32 {
     let lines = pen.wrapped(text, F::T400, 13.0, tone_star(), frame.right - frame.left);
     for (i, line) in lines.iter().enumerate() {

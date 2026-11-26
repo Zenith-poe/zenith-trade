@@ -497,7 +497,7 @@ impl Checker {
         self.run(text, &Config::default(), way, alive, &mut |step| {
             let shown = match (view.take(), step) {
                 (None, Step::Read(read)) => read,
-                (None, Step::Found(_) | Step::Relaxed(_) | Step::Bulk(_)) => return,
+                (None, Step::Found(_) | Step::Bulk(_)) => return,
                 (Some(mut shown), step) => {
                     shown.take(step);
                     shown
@@ -586,21 +586,10 @@ impl Checker {
             }
             return;
         }
-        let mut last = None;
-        self.search(&request, alive, &mut |outcome| {
-            last = Some(outcome.clone());
-            emit(Step::Found(outcome));
-        });
-        // Nothing found: one more search with the stats on relaxed to "any (n-1) of n".
-        let empty = last.is_some_and(|outcome| outcome.total == Some(0) && outcome.listings.is_empty());
-        if empty && alive() {
-            let left = self.client.search_budget(Instant::now()).left;
-            let again = view.check().and_then(|check| check::broaden(check, 0, left).map(|n| (n, check::relaxed_request(check, n))));
-            if let Some((n, Some(request))) = again {
-                emit(Step::Relaxed(n));
-                self.search(&request, alive, &mut |outcome| emit(Step::Found(outcome)));
-            }
-        }
+        // What is on is asked for, and only that: no listing is no listing. Nothing is ever
+        // relaxed behind the player's back (a mod they ticked would then go missing from the
+        // listings); "Any N" is theirs to choose.
+        self.search(&request, alive, &mut |outcome| emit(Step::Found(outcome)));
         // The next check starts from a fresh list.
         if alive() {
             self.refresh_prices(false);

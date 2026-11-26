@@ -529,6 +529,7 @@ fn numbers(line: &ModLine) -> Vec<Number> {
 }
 
 /// What the lists hold for a text: see [`Matched`].
+#[derive(Clone)]
 struct Found {
     id: String,
     value: Option<f64>,
@@ -547,9 +548,17 @@ fn find_mod(m: &Mod, local: Local, texts: &Texts) -> Option<Found> {
             return Some(found);
         }
     }
-    m.lines
+    // Lines of their own stats: the first that is worth having, as `27% reduced Duration` is
+    // not and `25% increased effect` is, else the first found.
+    let found: Vec<Found> = m.lines
         .iter()
-        .find_map(|line| find_text(&line.template, &numbers(line), texts, Place::Whole(local)))
+        .filter_map(|line| find_text(&line.template, &numbers(line), texts, Place::Whole(local)))
+        .collect();
+    found
+        .iter()
+        .find(|found| found.value.is_some_and(|value| (value < 0.0) == found.lower))
+        .or(found.first())
+        .cloned()
         .or_else(|| {
             let line = m.lines.first()?;
             find_text(&line.template, &numbers(line), texts, Place::FirstLine)
@@ -575,6 +584,8 @@ enum Turn {
     Negated,
     /// The list counts what the item writes as `an`: one more number, 1.
     Counted,
+    /// The list has a chance where the item writes a certainty: 100.
+    Certain,
 }
 
 /// The id of one text, its value and the range of it. The text is tried with `#` for every
@@ -594,6 +605,7 @@ fn find_text(text: &str, numbers: &[Number], texts: &Texts, place: Place) -> Opt
                     Turn::Kept => mean(&picked),
                     Turn::Negated => mean(&picked).map(|value| -value),
                     Turn::Counted => mean(&[picked.as_slice(), &[1.0]].concat()),
+                    Turn::Certain => Some(100.0),
                 }
             };
             let value = counted(&|number| number.value);
@@ -711,6 +723,8 @@ fn wordings(text: &str) -> Vec<(String, Turn)> {
             .map(|text| (text, Turn::Negated)),
     );
     wordings.extend(count_additional(text).map(|text| (text, Turn::Counted)));
+    wordings.extend(one_additional(text).into_iter().map(|text| (text, Turn::Kept)));
+    wordings.extend(certain_chance(text).map(|text| (text, Turn::Certain)));
     // A cluster jewel writes its one socket in the singular: `1 Added Passive Skill is a Jewel
     // Socket`, which the lists have in the plural.
     if text.contains("Added Passive Skill is a Jewel Socket") {
@@ -768,6 +782,33 @@ fn count_additional(text: &str) -> Option<String> {
     }
     let (noun, after) = rest.split_at(end);
     Some(format!("{}# additional {noun}s{after}", &text[..at]))
+}
+
+/// `... # additional Strongboxes` as `... an additional Strongbox`: the lists may have only the
+/// one in words (a map enchant). The number stays the value.
+fn one_additional(text: &str) -> Vec<String> {
+    const WORDS: &str = "# additional ";
+    let Some(at) = text.find(WORDS) else { return Vec::new() };
+    let rest = &text[at + WORDS.len()..];
+    let end = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
+    let (noun, after) = rest.split_at(end);
+    [noun.strip_suffix("es"), noun.strip_suffix('s')]
+        .into_iter()
+        .flatten()
+        .map(|one| format!("{}an additional {one}{after}", &text[..at]))
+        .collect()
+}
+
+/// `Monsters gain a Frenzy Charge on Hit` as `Monsters have #% chance to gain a Frenzy Charge on
+/// Hit`: the game writes a chance of 100% as a certainty.
+fn certain_chance(text: &str) -> Option<String> {
+    if text.contains('#') {
+        return None;
+    }
+    let at = find_word(text, "gain")?;
+    let subject = text[..at].trim_end();
+    let have = if subject.ends_with('s') { "have" } else { "has" };
+    Some(format!("{subject} {have} #% chance to {}", &text[at..]))
 }
 
 /// The id of a text exactly as given, in its local form first where the item calls for it.

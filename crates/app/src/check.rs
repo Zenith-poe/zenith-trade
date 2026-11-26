@@ -115,8 +115,9 @@ impl Options {
     /// like the item, and nothing else.
     pub fn of(item: &Item) -> Self {
         Self {
-            // A map asks for its base, `Map (Tier 16)`, and a cluster jewel for its size.
-            base: (item.class == "Maps" && item.rarity != Rarity::Unique) || is_cluster(item),
+            // Gear asks for its base, a map for `Map (Tier 16)`, a cluster jewel for its size: the
+            // player widens the search by switching it off.
+            base: item.rarity != Rarity::Unique && (item.class == "Maps" || zenith_data::category(&item.class).is_some()),
             // A gem asks for the level and the quality it has.
             item_level: if item.rarity == Rarity::Gem { gem_level(item) } else { None },
             // A gem and a unique ask for the quality they have.
@@ -911,6 +912,8 @@ pub fn cycle(setting: Setting) -> Action {
 /// What the player did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
+    /// The version line: check for an update, or restart onto the ready one.
+    UpdateLine,
     /// The mod line at this place of the map gets this tag, or none.
     MapTag(usize, Option<crate::maps::Tag>),
     /// Each with the index of the filter in `Check::filters`.
@@ -1115,7 +1118,7 @@ pub fn apply(check: &mut Check, action: &Action) -> Effect {
         }
         Action::OpenTradeSite => return check.trade_url().map_or(Effect::None, Effect::Open),
         Action::Close => return Effect::Close,
-        Action::Launch(_) | Action::RunSearch(_) | Action::EditSearches => return Effect::None,
+        Action::Launch(_) | Action::RunSearch(_) | Action::EditSearches | Action::UpdateLine => return Effect::None,
     }
     if before != (check.filters.clone(), check.options, check.not.clone(), check.pure.clone(), check.any_count()) {
         check.stale = true;
@@ -1367,19 +1370,6 @@ pub fn request(check: &Check) -> Option<serde_json::Value> {
             Some(grouped(check, gear_request(&search, &options)))
         }
     }
-}
-
-/// When the first search of a check found no listing, the "Any N" value to search again with: one
-/// short of the stats that are on. Only for two stats or more, with "Any N" not on already, and
-/// while a search is left in the budget.
-pub fn broaden(check: &Check, found: u32, left: u32) -> Option<u32> {
-    let on = check.stats_on() as u32;
-    (found == 0 && left > 0 && on >= 2 && check.any_count().is_none()).then(|| on - 1)
-}
-
-/// The request of `check` with "Any N" on at `n`.
-pub fn relaxed_request(check: &Check, n: u32) -> Option<serde_json::Value> {
-    request(&Check { any: Some(n), ..check.clone() })
 }
 
 /// A request with the excluded stats in a `not` group and, when "Any N" is on, the stats that are

@@ -1,11 +1,13 @@
 ## What's new
 
-- Items: a switch over the listings shows the whole item of the listing under the pointer, beside the panel, drawn like the game's own tooltip (its font, its name plate, its sockets). Hold Alt for the advanced view: prefixes and suffixes apart, each mod with its tier, name and roll range.
-- Ctrl + X opens the item under the cursor in PoE Kit's Craft odds. The key can be changed in Settings.
-- A Facetor's Lens is priced by the experience it holds, and its listings show theirs.
-- An imbued gem is searched with the support built into it.
-- A mod written in the plural on the item and in the singular on the trade site (or the other way round) is found: "Utility Flasks gain 2 Charges every 3 seconds".
-- Invisible characters the game leaves in a copied item no longer hide a mod from the search.
+- Gear asks for its base by default: switch the base chip off to widen the search.
+- What is ticked is asked for, and only that: no search is widened behind your back, and "Any N" is never on unless you turn it on. When nothing for sale matches, the panel says so plainly.
+- Map enchants are shown and asked for ("Area contains 25 additional Strongboxes"), and more map mods are found ("Monsters gain a Frenzy Charge on Hit").
+- A flask mod of two lines is asked by the line worth having: an Alchemist's flask by its increased effect, not its reduced duration.
+- A "Twice Corrupted" item is searched as corrupted.
+- A reminder written over several lines (Foulborn The Coming Calamity) is no longer read as part of its mod.
+- The picker of an unidentified unique fits the panel whatever the number of uniques, and leaves out those that no longer drop outside Standard.
+- The version and whether an update is ready are shown at the bottom of the quick menu and in Settings.
 
 ## Install
 
