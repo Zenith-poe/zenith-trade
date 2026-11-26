@@ -1,6 +1,6 @@
 Third-party notices
 
-crates/data/unique-variants.json and crates/data/legacy-uniques.json are derived from the unique item data of Path of Building
+crates/data/unique-variants.json and crates/data/legacy-uniques.json are derived from, and crates/data/boss-loot.json is cross-checked with, the unique item data of Path of Building
 (https://github.com/PathOfBuildingCommunity/PathOfBuilding), used under the MIT licence:
 
 MIT License

@@ -244,10 +244,37 @@ pub struct Check {
     /// The menu of the candidates is shown open whatever the panel's own state says: the
     /// `--view` pictures of it.
     pub candidates_open: bool,
+    /// What the boss a fragment or invitation opens drops, to show as a grid under its price.
+    pub loot: Option<Loot>,
     /// The settings let a map be priced on the bulk exchange: without it there is no Bulk chip.
     pub bulk_allowed: bool,
     /// The filters as the item was read: what pricing it as an item starts from.
     defaults: Vec<Filter>,
+}
+
+/// The drops of a boss: its name and what it drops, with the chaos price of each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loot {
+    pub boss: String,
+    pub drops: Vec<Drop>,
+}
+
+impl Loot {
+    /// The pictures of `icons`, by name, for the drops that have none yet.
+    pub fn set_icons(&mut self, icons: &std::collections::HashMap<String, String>) {
+        for drop in &mut self.drops {
+            if drop.icon.is_none() {
+                drop.icon = icons.get(&drop.name).cloned();
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drop {
+    pub name: String,
+    pub icon: Option<String>,
+    pub chaos: f64,
 }
 
 impl Check {
@@ -268,6 +295,7 @@ impl Check {
             unique: None,
             reveal: false,
             candidates_open: false,
+            loot: None,
             bulk_allowed: false,
             item,
             rows,
@@ -322,6 +350,13 @@ impl Check {
     /// Gives each candidate its picture, by name; one with none keeps a placeholder.
     pub fn set_candidate_icons(&mut self, icons: &std::collections::HashMap<String, String>) {
         self.candidate_icons = self.candidates.iter().map(|name| icons.get(name).cloned()).collect();
+    }
+
+    /// Gives the drops of the loot their pictures.
+    pub fn set_loot_icons(&mut self, icons: &std::collections::HashMap<String, String>) {
+        if let Some(loot) = &mut self.loot {
+            loot.set_icons(icons);
+        }
     }
 
     /// Whether the picker is up: an unidentified unique with several candidates and no pick yet.

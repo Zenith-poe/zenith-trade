@@ -58,8 +58,6 @@ pub enum Step {
     Read(View),
     /// Where the search stands.
     Found(Outcome),
-    /// The live bulk offers of a stackable.
-    Bulk(Vec<zenith_trade::Bulk>),
 }
 
 impl View {
@@ -93,14 +91,17 @@ impl View {
                     check.result = outcome;
                 }
             }
-            Step::Bulk(bulk) => {
-                if let View::Item(check) = self {
-                    check.result.bulk = bulk;
-                }
-            }
             Step::Read(View::Item(read)) => match self {
                 View::Item(shown) if shown.same_reading(&read) => {
                     shown.result = read.result;
+                    // The list can arrive after the first reading: its prices make the loot.
+                    shown.loot = read.loot.map(|mut loot| {
+                        if let Some(old) = &shown.loot {
+                            let kept: std::collections::HashMap<String, String> = old.drops.iter().filter_map(|drop| Some((drop.name.clone(), drop.icon.clone()?))).collect();
+                            loot.set_icons(&kept);
+                        }
+                        loot
+                    });
                     // The pictures of the picker come after the first reading.
                     if read.candidate_icons.iter().any(Option::is_some) {
                         shown.candidate_icons = read.candidate_icons;
@@ -614,7 +615,7 @@ pub fn is_useless(view: &View) -> bool {
     match view {
         View::Message(message) => message == NOT_AN_ITEM,
         View::Item(check) => {
-            let priceless = check.result.quote.as_ref().and_then(|quote| quote.each).is_none() && check.result.bulk.is_empty();
+            let priceless = check.result.quote.as_ref().and_then(|quote| quote.each).is_none();
             !check.result.loading && (check.plan == Plan::Nothing || (check.plan == Plan::Stack && priceless))
         }
         _ => false,
@@ -651,6 +652,7 @@ pub fn quoted(mut view: View, list: Option<&PriceList>, league: Option<&str>) ->
             Some(_) => None,
         };
         check.plan = Plan::Stack;
+        check.loot = list.and_then(|list| quote::loot_of(&check.item, list)).filter(|loot| !loot.drops.is_empty());
         check.result = Outcome { league: league.map(str::to_owned), quote, problem, ..Outcome::default() };
     } else if check.searchable() {
         let unique = check.plan == Plan::Unique;
@@ -981,6 +983,20 @@ fn property_text(row: &Row) -> String {
         text.push_str(" (at 20% quality)");
     }
     text
+}
+
+/// The word at the head of an item: its rarity, except for a plain item that is no gear, which
+/// says what it is (a fragment, a scarab, an invitation).
+pub fn head_label(item: &Item) -> &str {
+    if item.rarity == Rarity::Normal {
+        match item.class.as_str() {
+            "Map Fragments" if item.base.contains("Scarab") => return "Scarab",
+            "Map Fragments" => return "Fragment",
+            "Misc Map Items" => return "Invitation",
+            _ => {}
+        }
+    }
+    rarity_label(&item.rarity)
 }
 
 /// The rarity as the game writes it. Nothing for an item that has none.

@@ -5,6 +5,7 @@
 use zenith_core::{Item, Rarity};
 use zenith_prices::{PriceList, sparkline};
 
+use crate::check::{Drop, Loot};
 use crate::state::{estimate_text, parse_utc};
 
 /// A list this young is not fetched again.
@@ -89,6 +90,28 @@ pub fn quote_of(item: &Item, list: Option<&PriceList>) -> Option<Quote> {
         _ => Vec::new(),
     };
     Some(Quote { each, trend, divine: list.divine, fetched: parse_utc(&list.fetched).unwrap_or(0) })
+}
+
+/// The most drops the grid under a boss item shows.
+pub const LOOT_MAX: usize = 8;
+
+/// What the boss a fragment or invitation opens drops, priced from the list: the lowest price
+/// among the lines of a name (a relic line is no price of the item), the dearest first, at most
+/// [`LOOT_MAX`]. A drop the list does not know, and a unique that left the game, is left out.
+pub fn loot_of(item: &Item, list: &PriceList) -> Option<Loot> {
+    let found = zenith_data::boss_loot(name_of(item))?;
+    let mut drops: Vec<Drop> = found
+        .drops
+        .iter()
+        .filter(|name| !zenith_data::is_legacy_unique(name))
+        .filter_map(|name| {
+            let chaos = list.find(name).into_iter().filter(|price| &*price.kind != "UniqueRelic").map(|price| price.chaos).min_by(f64::total_cmp)?;
+            Some(Drop { name: name.clone(), icon: None, chaos })
+        })
+        .collect();
+    drops.sort_by(|a, b| b.chaos.total_cmp(&a.chaos));
+    drops.truncate(LOOT_MAX);
+    Some(Loot { boss: found.boss.clone(), drops })
 }
 
 /// "42 min old", and whether that is old enough for the flag red. Under a minute is "1 min".

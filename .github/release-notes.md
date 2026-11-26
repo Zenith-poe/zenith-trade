@@ -1,13 +1,8 @@
 ## What's new
 
-- Gear asks for its base by default: switch the base chip off to widen the search.
-- What is ticked is asked for, and only that: no search is widened behind your back, and "Any N" is never on unless you turn it on. When nothing for sale matches, the panel says so plainly.
-- Map enchants are shown and asked for ("Area contains 25 additional Strongboxes"), and more map mods are found ("Monsters gain a Frenzy Charge on Hit").
-- A flask mod of two lines is asked by the line worth having: an Alchemist's flask by its increased effect, not its reduced duration.
-- A "Twice Corrupted" item is searched as corrupted.
-- A reminder written over several lines (Foulborn The Coming Calamity) is no longer read as part of its mod.
-- The picker of an unidentified unique fits the panel whatever the number of uniques, and leaves out those that no longer drop outside Standard.
-- The version and whether an update is ready are shown at the bottom of the quick menu and in Settings.
+- Boss fragments, invitations and keys show what their boss drops: up to eight of its most valuable uniques, gems and exclusive currency, priced from poe.ninja, with their pictures. Hover a cut name to read it whole. A Timeless emblem shows its own faction's jewel.
+- The header of a fragment names its type ("Fragment", "Invitation") instead of "Normal".
+- Stackable items show the poe.ninja price and its trend only: the live bulk offers are gone, and no trade request is made for them.
 
 ## Install
 

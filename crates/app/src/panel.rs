@@ -1036,7 +1036,7 @@ fn lay(
                 y = picker(&pen, &frame, y, check, &mut touch);
             } else if check.plan == Plan::Stack {
                 // Priced from the cached list alone: nothing is searched, nothing to edit.
-                y = stack_body(&pen, &frame, y, check, now);
+                y = stack_body(&pen, &frame, y, check, now, &mut touch);
             } else if check.in_bulk() {
                 // A map on the bulk exchange: its chips (Bulk turns back to listings), then the
                 // offers, or why there are none.
@@ -1682,7 +1682,7 @@ fn head(pen: &Pen<'_>, frame: &Frame, item: &Item, league: Option<&str>, rate: O
     });
     let league_w = league.as_ref().map_or(0.0, |t| t.w + 10.0) + rate.as_ref().map_or(0.0, |t| t.w + 10.0);
     // An item that has no rarity has no word here.
-    let label = state::rarity_label(&item.rarity);
+    let label = state::head_label(item);
     if !label.is_empty() {
         pen.draw(&pen.fitted(label, F::T600, 12.0, colour, 0.0, right - league_w - label_x), label_x, head_base);
     }
@@ -3151,7 +3151,7 @@ fn rate_row(pen: &Pen<'_>, frame: &Frame, y: f32, label: &str, amount: &str, uni
 /// of the stack, or of one when there is no stack, the source and its age, the price of one and
 /// the other currency, the seven days, and what a divine buys when it buys more than one.
 /// Without a price, the reason in its place.
-fn stack_body(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, now: i64) -> f32 {
+fn stack_body(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, now: i64, touch: &mut Touch) -> f32 {
     let Outcome { quote, problem, .. } = &check.result;
     let (left, right) = (frame.left, frame.right);
     let Some((quote, each)) = quote.as_ref().and_then(|quote| Some((quote, quote.each?.0))) else {
@@ -3212,10 +3212,68 @@ fn stack_body(pen: &Pen<'_>, frame: &Frame, y: f32, check: &Check, now: i64) -> 
         pen.draw_rich_right(&pen.rich(&rate, F::T400, 12.0, tone_mute(), 13.0), right, y + pen.bl(12.0, 24.0));
         y += 24.0 + 10.0;
     }
-    for bulk in &check.result.bulk {
-        y = bulk_offers(pen, frame, y, bulk, check.result.quote.as_ref());
+    // No live offers under a stackable: what its boss drops stands there when it is known.
+    if let Some(loot) = &check.loot {
+        y = loot_grid(pen, frame, y, loot, quote.divine, touch);
     }
     y
+}
+
+/// What a boss drops: its name, then a tile for each drop (picture, name, price), dearest first,
+/// four to a row and centred, in the look of the picker.
+fn loot_grid(pen: &Pen<'_>, frame: &Frame, y: f32, loot: &crate::check::Loot, divine: Option<f64>, touch: &mut Touch) -> f32 {
+    const GAP: f32 = 4.0;
+    const LINE: f32 = 14.0;
+    const COLUMNS: usize = 4;
+    const PICTURE: f32 = 56.0;
+    /// The price under the name.
+    const PRICE: f32 = 15.0;
+    const PRICE_LINE: f32 = 20.0;
+    let (left, right) = (frame.left, frame.right);
+    pen.fill(left, y, right - left, 1.0, 0, tone_hair());
+    let y = y + 1.0 + 10.0;
+    pen.draw(&pen.t(&loot.boss, F::T400, 12.0, tone_mute()), left, y + pen.bl(12.0, 20.0));
+    let top = y + 20.0 + 2.0;
+    let tile_h = 6.0 + PICTURE + 2.0 + LINE + PRICE_LINE + 6.0;
+    let width = right - left;
+    let tile_w = ((width - GAP * (COLUMNS as f32 - 1.0)) / COLUMNS as f32).floor();
+    let drops = &loot.drops[..loot.drops.len().min(quote::LOOT_MAX)];
+    for (index, drop) in drops.iter().enumerate() {
+        let (column, row) = (index % COLUMNS, index / COLUMNS);
+        let in_row = (drops.len() - row * COLUMNS).min(COLUMNS) as f32;
+        let start = left + (width - in_row * tile_w - GAP * (in_row - 1.0)) / 2.0;
+        let (x, y) = (start + column as f32 * (tile_w + GAP), top + row as f32 * (tile_h + GAP));
+        let square = Rect::from_min_size(pen.at(x + (tile_w - PICTURE) / 2.0, y + 6.0), vec2(PICTURE, PICTURE));
+        // A unique has its own picture address; anything else is in the static data by its name.
+        let texture = match drop.icon.as_deref() {
+            Some(url) => icons::get_url(pen.ctx, &drop.name, url),
+            None => icons::get(pen.ctx, &drop.name),
+        };
+        match texture {
+            Some(texture) => pen.picture(texture, square),
+            None => {
+                pen.add(Shape::circle_filled(square.center(), PICTURE / 2.0 - 4.0, Color32::from_white_alpha(14)));
+                let initial = pen.t(&drop.name.chars().next().map(String::from).unwrap_or_default(), F::T600, 22.0, tone_mute());
+                let at = square.center() - pen.o;
+                pen.draw(&initial, at.x - initial.w / 2.0, at.y - 14.0 + pen.bl(22.0, 28.0));
+            }
+        }
+        let name = pen.fitted(&drop.name, F::T500, 10.5, tone_star(), 0.0, tile_w - 4.0);
+        // A name that was cut is read whole under the pointer.
+        if pen.t(&drop.name, F::T500, 10.5, tone_star()).w > tile_w - 4.0 {
+            touch.tips.push((pen.r(x, y, tile_w, tile_h), drop.name.clone()));
+        }
+        pen.draw(&name, x + (tile_w - name.w) / 2.0, y + 6.0 + PICTURE + 2.0 + pen.bl(10.5, LINE));
+        let (amount, unit) = quote::amount_text(drop.chaos, divine);
+        let amount = pen.t(&amount, F::T700, PRICE, tone_gold_hi());
+        let unit = pen.unit(unit, pen.t(unit, F::T400, PRICE, tone_mute()), PRICE, 16.0);
+        let total = amount.w + 4.0 + unit.w;
+        let base = y + 6.0 + PICTURE + 2.0 + LINE + pen.bl(PRICE, PRICE_LINE);
+        pen.draw(&amount, x + (tile_w - total) / 2.0, base);
+        pen.draw_rich(&unit, x + (tile_w - total) / 2.0 + amount.w + 4.0, base);
+    }
+    let rows = drops.len().div_ceil(COLUMNS) as f32;
+    top + rows * (tile_h + GAP) - GAP + 4.0
 }
 
 /// The price list's price of one item in the currency of `bulk`, when it knows one.

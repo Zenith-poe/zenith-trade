@@ -97,8 +97,33 @@ pub fn parse_unique_icons(body: &str) -> std::collections::HashMap<String, Strin
     icons
 }
 
-/// The pictures of the uniques of one overview type, read from the cache file in `dir` when it is
-/// under a day old, else fetched (and the file written). Empty when it can be neither.
+/// The picture address of each currency in a currency overview
+/// (`{"currencyDetails": [{"name", "icon"}]}`): the first one a name has.
+pub fn parse_currency_icons(body: &str) -> std::collections::HashMap<String, String> {
+    let mut icons = std::collections::HashMap::new();
+    let value: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    for line in value["currencyDetails"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(icon)) = (line["name"].as_str(), line["icon"].as_str())
+            && !name.is_empty()
+            && !icon.is_empty()
+        {
+            icons.entry(name.to_owned()).or_insert_with(|| icon.to_owned());
+        }
+    }
+    icons
+}
+
+/// Where poe.ninja lists the pictures of the currencies and fragments, by overview type.
+const CURRENCY_SOURCE: &str = "https://poe.ninja/poe1/api/economy/stash/current/currency/overview";
+
+/// The kinds of the currency endpoint; every other kind is an item overview.
+fn is_currency_kind(kind: &str) -> bool {
+    matches!(kind, "Currency" | "Fragment")
+}
+
+/// The pictures of one overview type (uniques, skill gems, currencies, fragments), read from the
+/// cache file in `dir` when it is under a day old, else fetched (and the file written): one
+/// request per kind and league. Empty when it can be neither.
 pub fn unique_icons(dir: &Path, league: &str, kind: &str, user_agent: &str) -> std::collections::HashMap<String, String> {
     let safe: String = league.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     let file = dir.join(format!("unique-icons-{kind}-{safe}.json"));
@@ -112,8 +137,10 @@ pub fn unique_icons(dir: &Path, league: &str, kind: &str, user_agent: &str) -> s
         .timeout_global(Some(std::time::Duration::from_secs(8)))
         .build()
         .into();
-    let body = agent.get(UNIQUE_SOURCE).query("league", league).query("type", kind).call().ok().and_then(|mut response| response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().ok());
-    let map = body.map(|body| parse_unique_icons(&body)).unwrap_or_default();
+    let currency = is_currency_kind(kind);
+    let source = if currency { CURRENCY_SOURCE } else { UNIQUE_SOURCE };
+    let body = agent.get(source).query("league", league).query("type", kind).call().ok().and_then(|mut response| response.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().ok());
+    let map = body.map(|body| if currency { parse_currency_icons(&body) } else { parse_unique_icons(&body) }).unwrap_or_default();
     if !map.is_empty() {
         let _ = std::fs::create_dir_all(dir);
         if let Ok(text) = serde_json::to_string(&map) {

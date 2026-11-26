@@ -146,6 +146,27 @@ pub fn pack_path() -> PathBuf {
 }
 
 /// The same identity as the trade client's requests.
+/// The pictures of the drops named in `names`: the uniques, currencies, fragments and skill gems
+/// of every overview type, as poe.ninja lists them, those of Standard filling in what the league lacks.
+fn loot_icons(dir: &Path, league: &str, names: &[String]) -> std::collections::HashMap<String, String> {
+    const KINDS: [&str; 9] = ["UniqueAccessory", "UniqueArmour", "UniqueJewel", "UniqueFlask", "UniqueWeapon", "UniqueMap", "Currency", "Fragment", "SkillGem"];
+    let mut found = std::collections::HashMap::new();
+    for pass in [league, "Standard"] {
+        if pass == "Standard" && league == "Standard" {
+            break;
+        }
+        for kind in KINDS {
+            if names.iter().all(|name| found.contains_key(name)) {
+                return found;
+            }
+            for (name, icon) in icons::unique_icons(dir, pass, kind, &user_agent()) {
+                found.entry(name).or_insert(icon);
+            }
+        }
+    }
+    found
+}
+
 fn user_agent() -> String {
     format!("zenith/{} (contact: {CONTACT})", env!("CARGO_PKG_VERSION"))
 }
@@ -326,20 +347,6 @@ impl Checker {
         }
     }
 
-    /// The live bulk offers for a priced stackable: one request against chaos, and one against
-    /// divine when the item is worth a divine or more. A request that the limits do not allow is
-    /// not sent; nothing is retried and a failure only leaves the offers out.
-    fn bulk_offers(&mut self, check: &crate::check::Check) -> Vec<Bulk> {
-        let Some(quote) = check.result.quote.as_ref() else {
-            return Vec::new();
-        };
-        let Some((each, _)) = quote.each else {
-            return Vec::new();
-        };
-        let dear = quote.divine.is_some_and(|rate| rate > 0.0 && each >= rate);
-        self.bulk_of(quote::name_of(&check.item), dear)
-    }
-
     /// The live bulk offers for `name`, against chaos and, when it is `dear` (worth a divine or
     /// more), against divine too.
     fn bulk_of(&mut self, name: &str, dear: bool) -> Vec<Bulk> {
@@ -497,7 +504,7 @@ impl Checker {
         self.run(text, &Config::default(), way, alive, &mut |step| {
             let shown = match (view.take(), step) {
                 (None, Step::Read(read)) => read,
-                (None, Step::Found(_) | Step::Bulk(_)) => return,
+                (None, Step::Found(_)) => return,
                 (Some(mut shown), step) => {
                     shown.take(step);
                     shown
@@ -552,10 +559,19 @@ impl Checker {
                 view = self.read_view(text, pins, way);
                 emit(Step::Read(view.clone()));
             }
-            if alive()
-                && let Some(bulk) = view.check().map(|check| self.bulk_offers(check)).filter(|bulk| !bulk.is_empty())
+            // The pictures of what its boss drops come after the first reading.
+            if let View::Item(check) = &mut view
+                && check.loot.is_some()
+                && alive()
             {
-                emit(Step::Bulk(bulk));
+                let dir = self.price_path(self.league.as_deref().unwrap_or("Standard")).parent().map(Path::to_path_buf).unwrap_or_default();
+                let league = self.league.clone().unwrap_or_else(|| "Standard".into());
+                let names: Vec<String> = check.loot.iter().flat_map(|loot| loot.drops.iter().map(|drop| drop.name.clone())).collect();
+                let found = loot_icons(&dir, &league, &names);
+                if !found.is_empty() && alive() {
+                    check.set_loot_icons(&found);
+                    emit(Step::Read(view.clone()));
+                }
             }
             return;
         }
